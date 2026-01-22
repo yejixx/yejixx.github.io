@@ -167,7 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await signOut(auth);
                 console.log('Signed out');
-                window.location.href = "../registeration/registeration2.html";
+                window.location.href = "index.html";
             } catch (error) {
                 console.error('Sign out error:', error);
             }
@@ -187,9 +187,9 @@ onAuthStateChanged(auth, (user) => {
         }
         
         // Only redirect if we're on the registration page AND haven't redirected yet
-        if (window.location.pathname.includes('registeration') && !hasRedirected) {
+        if (window.location.pathname.includes('index.html') && !hasRedirected) {
             hasRedirected = true;
-            window.location.href = "../cookie-clicker/clicker.html";
+            window.location.href = "/cookie-clicker/clicker.html";
         }
     } else {
         console.log('No user signed in');
@@ -197,7 +197,7 @@ onAuthStateChanged(auth, (user) => {
         // Redirect to login if we're on the game page AND haven't redirected yet
         if (window.location.pathname.includes('clicker') && !hasRedirected) {
             hasRedirected = true;
-            window.location.href = "../registeration/registeration2.html";
+            window.location.href = "../index.html";
         }
         
         if (authContainer) authContainer.classList.remove('hide');
