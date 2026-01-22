@@ -1,0 +1,129 @@
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    display: flex;
+        }
+        
+.sidebar {
+    width: 250px;
+    background-color: #f0f0f0;
+    padding: 20px;
+    height: 100vh;
+    box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+        }
+        
+.main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+        }
+        
+button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;;
+        }
+        
+
+    
+img {
+    width: 300px;
+    height: 300px;
+        }
+        
+#clicks {
+    font-size: 24px;
+    font-weight: bold;
+        }
+
+button:hover {
+    transform: scale(1.05) translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
+}
+
+
+button:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+
+
+
+.button-container1 {
+  display: flex;
+  background-color: rgb(0, 0, 0);
+  width: 250px;
+  height: 40px;
+  align-items: center;
+  justify-content: space-around;
+  border-radius: 10px;
+  box-shadow: rgba(97, 31, 126, 0.35) 0px 5px 15px,
+        rgba(255, 255, 255, 0) 5px 10px 15px;
+  bottom: 0;
+  position: fixed;
+}
+
+.button1 {
+  outline: 0 !important;
+  border: 0 !important;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: all ease-in-out 0.3s;
+  cursor: pointer;
+}
+
+.button1:hover {
+  transform: translateY(-3px);
+}
+
+.icon1 {
+  font-size: 20px;
+}
+
+.sign-out-corner {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(255, 255, 255, 0.95);
+    padding: 10px 20px;
+    border-radius: 25px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    z-index: 1000;
+}
+
+.sign-out-corner .user-email {
+    font-size: 14px;
+    color: #333;
+    margin: 0;
+}
+
+.sign-out-corner button {
+    background: #ff416c;
+    color: white;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.sign-out-corner button:hover {
+    background: #ff4b2b;
+    transform: scale(1.05);
+}
