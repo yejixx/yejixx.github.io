@@ -48,6 +48,50 @@ document.addEventListener('DOMContentLoaded', () => {
     const googleSignInBtn = document.getElementById('googleSignInBtn');
     const googleSignUpBtn = document.getElementById('googleSignUpBtn');
 
+    // At the top of firebaseauth.js, after imports
+    const ROUTES = {
+    LOGIN: '/index.html',
+    GAME: '/cookie-clicker/clicker.html'
+    };
+
+    // In your onAuthStateChanged:
+    onAuthStateChanged(auth, (user) => {
+        if (user) {
+            console.log('User signed in:', user.email);
+            
+            if (userEmailDisplay) {
+                userEmailDisplay.textContent = user.email;
+            }
+            
+            // Check the current path
+            const currentPath = window.location.pathname;
+            console.log('Current path:', currentPath); // Debug log
+            
+            // If on login page, redirect to game
+            if ((currentPath === '/' || currentPath === '/index.html') && !hasRedirected) {
+                hasRedirected = true;
+                console.log('Redirecting to game...'); // Debug log
+                window.location.href = ROUTES.GAME;
+            }
+        } else {
+            console.log('No user signed in');
+            
+            const currentPath = window.location.pathname;
+            
+            // If on game page, redirect to login
+            if (currentPath.includes('clicker') && !hasRedirected) {
+                hasRedirected = true;
+                console.log('Redirecting to login...'); // Debug log
+                window.location.href = ROUTES.LOGIN;
+            }
+            
+            if (authContainer) authContainer.classList.remove('hide');
+            if (gameContainer) gameContainer.classList.remove('show');
+        }
+    });
+
+    
+
     if (googleSignInBtn) {
         googleSignInBtn.addEventListener('click', async (e) => {
             e.preventDefault();
@@ -177,35 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Listen for auth state changes
 let hasRedirected = false; // Add this flag
 
-const ROUTES = {
-    LOGIN: '/index.html',
-    GAME: '/cookie-clicker/clicker.html'
-};
 
-onAuthStateChanged(auth, (user) => {
-    if (user) {
-        console.log('User signed in:', user.email);
-        
-        if (userEmailDisplay) {
-            userEmailDisplay.textContent = user.email;
-        }
-        
-        if (window.location.pathname.includes('index.html') && !hasRedirected) {
-            hasRedirected = true;
-            window.location.href = ROUTES.GAME;
-        }
-    } else {
-        console.log('No user signed in');
-        
-        if (window.location.pathname.includes('clicker') && !hasRedirected) {
-            hasRedirected = true;
-            window.location.href = ROUTES.LOGIN;
-        }
-        
-        if (authContainer) authContainer.classList.remove('hide');
-        if (gameContainer) gameContainer.classList.remove('show');
-    }
-});
 
     // Allow Enter key to submit (only if inputs exist)
     if (signInPasswordInput && signInButton) {
