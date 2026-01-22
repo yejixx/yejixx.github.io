@@ -48,29 +48,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const googleSignInBtn = document.getElementById('googleSignInBtn');
     const googleSignUpBtn = document.getElementById('googleSignUpBtn');
 
-    // At the top of firebaseauth.js, after imports
+    // At the top, after googleProvider
     const ROUTES = {
-    LOGIN: '/index.html',
-    GAME: '/cookie-clicker/clicker.html'
+        LOGIN: window.location.origin + '/index.html',
+        GAME: window.location.origin + '/cookie-clicker/clicker.html'
     };
 
-    // In your onAuthStateChanged:
+    // In onAuthStateChanged
     onAuthStateChanged(auth, (user) => {
         if (user) {
             console.log('User signed in:', user.email);
+            console.log('Current pathname:', window.location.pathname);
             
-            if (userEmailDisplay) {
-                userEmailDisplay.textContent = user.email;
-            }
-            
-            // Check the current path
             const currentPath = window.location.pathname;
-            console.log('Current path:', currentPath); // Debug log
             
-            // If on login page, redirect to game
-            if ((currentPath === '/' || currentPath === '/index.html') && !hasRedirected) {
+            // If NOT on clicker page, redirect to game
+            if (!currentPath.includes('clicker') && !hasRedirected) {
                 hasRedirected = true;
-                console.log('Redirecting to game...'); // Debug log
+                console.log('🚀 Redirecting to:', ROUTES.GAME);
                 window.location.href = ROUTES.GAME;
             }
         } else {
@@ -78,10 +73,9 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const currentPath = window.location.pathname;
             
-            // If on game page, redirect to login
+            // If on clicker page, redirect to login
             if (currentPath.includes('clicker') && !hasRedirected) {
                 hasRedirected = true;
-                console.log('Redirecting to login...'); // Debug log
                 window.location.href = ROUTES.LOGIN;
             }
             
