@@ -177,27 +177,29 @@ document.addEventListener('DOMContentLoaded', () => {
     // Listen for auth state changes
 let hasRedirected = false; // Add this flag
 
+const ROUTES = {
+    LOGIN: '/index.html',
+    GAME: '/cookie-clicker/clicker.html'
+};
+
 onAuthStateChanged(auth, (user) => {
     if (user) {
         console.log('User signed in:', user.email);
         
-        // Update email display if element exists
         if (userEmailDisplay) {
             userEmailDisplay.textContent = user.email;
         }
         
-        // Only redirect if we're on the registration page AND haven't redirected yet
         if (window.location.pathname.includes('index.html') && !hasRedirected) {
             hasRedirected = true;
-            window.location.href = "/cookie-clicker/clicker.html";
+            window.location.href = ROUTES.GAME;
         }
     } else {
         console.log('No user signed in');
         
-        // Redirect to login if we're on the game page AND haven't redirected yet
         if (window.location.pathname.includes('clicker') && !hasRedirected) {
             hasRedirected = true;
-            window.location.href = "../index.html";
+            window.location.href = ROUTES.LOGIN;
         }
         
         if (authContainer) authContainer.classList.remove('hide');
