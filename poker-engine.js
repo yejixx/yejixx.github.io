@@ -426,7 +426,16 @@ class PokerGame {
       return this._showdown();
     }
 
-    if (canAct.length <= 1) return this._nextPhase();
+    if (canAct.length <= 1) {
+      return {
+        type: 'newPhase',
+        phase: this.phase,
+        communityCards: [...this.communityCards],
+        pot: this.pot,
+        currentPlayerSeatIndex: -1,
+        allInRunout: true,
+      };
+    }
 
     this.needsToAct = new Set();
     for (let i = 0; i < this.players.length; i++) {
@@ -435,7 +444,16 @@ class PokerGame {
 
     const dIdx = this.players.findIndex(p => p.seatIndex === this.dealerSeatIndex);
     this.currentPlayerIdx = this._nextActive(dIdx);
-    if (this.currentPlayerIdx === -1) return this._nextPhase();
+    if (this.currentPlayerIdx === -1) {
+      return {
+        type: 'newPhase',
+        phase: this.phase,
+        communityCards: [...this.communityCards],
+        pot: this.pot,
+        currentPlayerSeatIndex: -1,
+        allInRunout: true,
+      };
+    }
 
     return {
       type: 'newPhase',

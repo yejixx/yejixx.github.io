@@ -38,6 +38,8 @@ function lobbyState(lobby, forSocketId) {
       isMe: s.socketId === forSocketId,
       socketId: s.socketId,
       connected: s.connected,
+      bustCount: s.bustCount || 0,
+      winCount: s.winCount || 0,
     } : null),
     gameInProgress: lobby.game !== null && lobby.game.phase !== 'waiting' && lobby.game.phase !== 'complete',
   };
@@ -60,6 +62,8 @@ io.on('connection', (socket) => {
       settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10 },
       game: null,
       pendingApprovals: [],
+      handCount: 0,
+      playerStats: new Map(),  // socketId → { bustCount, winCount }
     };
 
     lobbies.set(code, lobby);
@@ -165,6 +169,8 @@ io.on('connection', (socket) => {
 
     if (!lobby.game) lobby.game = new PokerGame(lobby.settings);
     lobby.game.settings = { ...lobby.settings };
+    lobby.game._allInRevealed = false;
+    lobby.handCount++;
 
     const result = lobby.game.startHand(activePlayers);
     if (!result) { socket.emit('error-msg', 'Could not start hand'); return; }
@@ -176,6 +182,7 @@ io.on('connection', (socket) => {
 
     // Broadcast game state (no private cards)
     io.to(lobby.code).emit('hand-started', {
+      handNumber: lobby.handCount,
       dealerSeatIndex: result.dealerSeatIndex,
       sbSeatIndex: result.sbSeatIndex,
       bbSeatIndex: result.bbSeatIndex,
@@ -278,6 +285,7 @@ function getLobby(socket) {
 }
 
 function seatPlayer(lobby, socketId, seatIndex, username, gameActive) {
+  const stats = lobby.playerStats.get(socketId) || { bustCount: 0, winCount: 0 };
   const player = {
     socketId,
     username,
@@ -286,6 +294,8 @@ function seatPlayer(lobby, socketId, seatIndex, username, gameActive) {
     approved: true,
     pendingNextRound: gameActive,
     connected: true,
+    bustCount: stats.bustCount,
+    winCount: stats.winCount,
   };
   lobby.seats[seatIndex] = player;
   io.to(lobby.code).emit('player-seated', {
@@ -295,6 +305,8 @@ function seatPlayer(lobby, socketId, seatIndex, username, gameActive) {
     approved: true,
     pendingNextRound: player.pendingNextRound,
     socketId,
+    bustCount: stats.bustCount,
+    winCount: stats.winCount,
   });
 }
 
@@ -326,21 +338,61 @@ function broadcastAction(lobby, result) {
       communityCards: result.communityCards,
       pot: result.pot,
       currentPlayerSeatIndex: result.currentPlayerSeatIndex,
+      allInRunout: !!result.allInRunout,
     });
-    sendActions(lobby);
+    if (result.allInRunout) {
+      // Reveal all active players' hands in all-in runout
+      if (!lobby.game._allInRevealed) {
+        lobby.game._allInRevealed = true;
+        const hands = lobby.game.players
+          .filter(p => !p.folded)
+          .map(p => ({ seatIndex: p.seatIndex, hand: [...p.hand] }));
+        io.to(lobby.code).emit('cards-revealed', { hands });
+      }
+      // Auto-advance to next phase after delay
+      setTimeout(() => {
+        if (!lobby.game || lobby.game.phase === 'complete' || lobby.game.phase === 'showdown') return;
+        const next = lobby.game._nextPhase();
+        if (next) broadcastAction(lobby, next);
+      }, 1800);
+    } else {
+      sendActions(lobby);
+    }
   } else if (result.type === 'showdown') {
-    // Send all hands to everyone
     io.to(lobby.code).emit('showdown', {
       communityCards: result.communityCards,
       potResults: result.potResults,
       players: result.players,
     });
-    // Update seat chips
+    // Update seat chips and track wins
     for (const p of result.players) {
       const seat = lobby.seats[p.seatIndex];
       if (seat) seat.chips = p.chips;
     }
+    for (const pr of result.potResults) {
+      for (const w of pr.winners) {
+        const seat = lobby.seats[w.seatIndex];
+        if (seat) {
+          seat.winCount = (seat.winCount || 0) + 1;
+          const st = lobby.playerStats.get(seat.socketId) || { bustCount: 0, winCount: 0 };
+          st.winCount = seat.winCount;
+          lobby.playerStats.set(seat.socketId, st);
+        }
+      }
+    }
+    // Handle busted players after animation
+    setTimeout(() => handleBustedPlayers(lobby), 4500);
   } else if (result.type === 'handComplete') {
+    // Track wins
+    for (const w of result.winners) {
+      const seat = lobby.seats[w.seatIndex];
+      if (seat) {
+        seat.winCount = (seat.winCount || 0) + 1;
+        const st = lobby.playerStats.get(seat.socketId) || { bustCount: 0, winCount: 0 };
+        st.winCount = seat.winCount;
+        lobby.playerStats.set(seat.socketId, st);
+      }
+    }
     io.to(lobby.code).emit('hand-complete', {
       winners: result.winners,
       players: result.players,
@@ -348,6 +400,26 @@ function broadcastAction(lobby, result) {
     for (const p of result.players) {
       const seat = lobby.seats[p.seatIndex];
       if (seat) seat.chips = p.chips;
+    }
+    // Handle busted players after animation
+    setTimeout(() => handleBustedPlayers(lobby), 3500);
+  }
+}
+
+function handleBustedPlayers(lobby) {
+  for (let i = 0; i < lobby.seats.length; i++) {
+    const seat = lobby.seats[i];
+    if (seat && seat.chips <= 0) {
+      const stats = lobby.playerStats.get(seat.socketId) || { bustCount: 0, winCount: 0 };
+      stats.bustCount++;
+      lobby.playerStats.set(seat.socketId, stats);
+      io.to(lobby.code).emit('player-busted', {
+        seatIndex: i,
+        username: seat.username,
+        bustCount: stats.bustCount,
+        socketId: seat.socketId,
+      });
+      lobby.seats[i] = null;
     }
   }
 }

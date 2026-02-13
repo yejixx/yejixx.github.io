@@ -35,16 +35,32 @@
       </div>
     </div>
 
+    <!-- Players Panel -->
+    <div id="players-panel" class="panel-collapsed">
+      <div id="players-header">
+        <span>PLAYERS</span>
+        <span id="players-count">0</span>
+      </div>
+      <div id="players-list"></div>
+    </div>
+
     <!-- Table -->
     <div id="table-area">
       <div id="poker-table">
-        <div id="community-cards"></div>
+        <div id="table-center">
+          <div id="deck-area">
+            <div class="deck-card"></div>
+            <div class="deck-card"></div>
+            <div class="deck-card"></div>
+            <div class="deck-card"></div>
+          </div>
+          <div id="community-cards"></div>
+        </div>
         <div id="pot-display"><span id="pot-amount"></span></div>
-        <div id="deck-area"></div>
         <div id="shuffle-area"></div>
         <div id="game-message"></div>
       </div>
-      <!-- 8 seats positioned by CSS -->
+      <!-- 8 seats -->
       <div class="seat" data-seat="0"></div>
       <div class="seat" data-seat="1"></div>
       <div class="seat" data-seat="2"></div>
@@ -57,15 +73,15 @@
 
     <!-- Action Bar -->
     <div id="action-bar" class="hidden">
-      <button id="btn-fold" class="btn btn-action">FOLD</button>
-      <button id="btn-check" class="btn btn-action" style="display:none">CHECK</button>
-      <button id="btn-call" class="btn btn-action" style="display:none">CALL <span id="call-amount"></span></button>
+      <button id="btn-fold" class="btn btn-action">Fold</button>
+      <button id="btn-check" class="btn btn-action" style="display:none">Check</button>
+      <button id="btn-call" class="btn btn-action" style="display:none">Call <span id="call-amount"></span></button>
       <div class="raise-group">
         <input type="range" id="raise-slider" min="0" max="0" value="0" />
         <input type="number" id="raise-input" />
-        <button id="btn-raise" class="btn btn-action btn-primary">RAISE</button>
+        <button id="btn-raise" class="btn btn-action btn-raise-action">Raise</button>
       </div>
-      <button id="btn-allin" class="btn btn-action btn-allin">ALL IN</button>
+      <button id="btn-allin" class="btn btn-action btn-allin">All In</button>
     </div>
 
     <!-- Chat -->

@@ -1,18 +1,80 @@
-// app.js — Poker Client
+// app.js — Poker Client (v3)
 
 const socket = io();
 
 // ── Suit / Rank helpers ──────────────────────────────────────
 const SUIT_SYM = { s: '♠', h: '♥', d: '♦', c: '♣' };
 const RANK_DISP = { T: '10', J: 'J', Q: 'Q', K: 'K', A: 'A' };
+const RANKS_ORDER = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
+const HAND_NAMES = [
+  'High Card','Pair','Two Pair','Three of a Kind',
+  'Straight','Flush','Full House','Four of a Kind',
+  'Straight Flush','Royal Flush',
+];
 function dispRank(r) { return RANK_DISP[r] || r; }
 function isRed(suit) { return suit === 'h' || suit === 'd'; }
+
+// ── Client-side Hand Evaluation (for "best hand" display) ────
+function rvC(rank) { return RANKS_ORDER.indexOf(rank) + 2; }
+
+function eval5C(cards) {
+  const vals = cards.map(c => rvC(c.rank)).sort((a, b) => b - a);
+  const suits = cards.map(c => c.suit);
+  const isFlush = suits.every(s => s === suits[0]);
+  let isStraight = false, straightHigh = vals[0];
+  const unique = [...new Set(vals)];
+  if (unique.length === 5) {
+    if (vals[0] - vals[4] === 4) isStraight = true;
+    if (vals[0] === 14 && vals[1] === 5 && vals[2] === 4 && vals[3] === 3 && vals[4] === 2) {
+      isStraight = true; straightHigh = 5;
+    }
+  }
+  const freq = {};
+  vals.forEach(v => (freq[v] = (freq[v] || 0) + 1));
+  const groups = Object.entries(freq)
+    .map(([v, c]) => ({ val: parseInt(v), count: c }))
+    .sort((a, b) => b.count - a.count || b.val - a.val);
+
+  if (isStraight && isFlush) return { hr: straightHigh === 14 ? 9 : 8, name: HAND_NAMES[straightHigh === 14 ? 9 : 8] };
+  if (groups[0].count === 4) return { hr: 7, name: HAND_NAMES[7] };
+  if (groups[0].count === 3 && groups.length >= 2 && groups[1].count === 2) return { hr: 6, name: HAND_NAMES[6] };
+  if (isFlush) return { hr: 5, name: HAND_NAMES[5] };
+  if (isStraight) return { hr: 4, name: HAND_NAMES[4] };
+  if (groups[0].count === 3) return { hr: 3, name: HAND_NAMES[3] };
+  if (groups[0].count === 2 && groups.length >= 2 && groups[1].count === 2) return { hr: 2, name: HAND_NAMES[2] };
+  if (groups[0].count === 2) return { hr: 1, name: HAND_NAMES[1] };
+  return { hr: 0, name: HAND_NAMES[0] };
+}
+
+function combosC(arr, k) {
+  if (k === 0) return [[]];
+  if (arr.length < k) return [];
+  const [first, ...rest] = arr;
+  return [...combosC(rest, k - 1).map(c => [first, ...c]), ...combosC(rest, k)];
+}
+
+function getMyBestHandName() {
+  if (state.myHand.length === 0) return '';
+  const all = [...state.myHand, ...state.game.communityCards];
+  if (all.length < 5) {
+    // Preflop — check for pocket pair
+    if (all.length >= 2 && all[0].rank === all[1].rank) return 'Pair';
+    return 'High Card';
+  }
+  let best = null;
+  for (const combo of combosC(all, 5)) {
+    const r = eval5C(combo);
+    if (!best || r.hr > best.hr) best = r;
+  }
+  return best ? best.name : '';
+}
 
 // ── State ────────────────────────────────────────────────────
 const state = {
   screen: 'home',
   lobbyCode: null,
   isHost: false,
+  hostSocketId: null,
   mySeatIndex: -1,
   myUsername: null,
   myHand: [],
@@ -28,11 +90,14 @@ const state = {
     bbSeatIndex: -1,
     currentPlayerSeatIndex: -1,
     playerStates: {},
+    activeSeatOrder: [],
   },
   myActions: null,
   pendingApprovals: [],
   chatOpen: false,
   unreadChat: 0,
+  playersOpen: false,
+  displayedCommunityCount: 0,
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -50,9 +115,11 @@ const el = {
   btnSettings: $('#btn-settings'),
   btnDeal: $('#btn-deal'),
   tableArea: $('#table-area'),
+  pokerTable: $('#poker-table'),
   communityCards: $('#community-cards'),
   potAmount: $('#pot-amount'),
   gameMessage: $('#game-message'),
+  deckArea: $('#deck-area'),
   shuffleArea: $('#shuffle-area'),
   actionBar: $('#action-bar'),
   btnFold: $('#btn-fold'),
@@ -69,6 +136,10 @@ const el = {
   chatInput: $('#chat-input'),
   btnSendChat: $('#btn-send-chat'),
   chatBadge: $('#chat-badge'),
+  playersPanel: $('#players-panel'),
+  playersHeader: $('#players-header'),
+  playersList: $('#players-list'),
+  playersCount: $('#players-count'),
   modalOverlay: $('#modal-overlay'),
   joinModal: $('#join-modal'),
   joinCodeInput: $('#join-code-input'),
@@ -119,7 +190,7 @@ $('#btn-join-cancel').onclick = hideModal;
 el.joinCodeInput.addEventListener('keydown', e => { if (e.key === 'Enter') $('#btn-join-confirm').click(); });
 
 // ── Lobby Events ─────────────────────────────────────────────
-socket.on('lobby-created', (data) => enterLobby(data));
+socket.on('lobby-created', (data) => { state.hostSocketId = socket.id; enterLobby(data); });
 socket.on('lobby-joined', (data) => enterLobby(data));
 
 function enterLobby(data) {
@@ -129,7 +200,7 @@ function enterLobby(data) {
   state.settings = { ...data.settings };
   state.mySeatIndex = -1;
   state.myUsername = null;
-  state.seats = data.seats.map((s, i) => {
+  state.seats = data.seats.map((s) => {
     if (!s) return null;
     if (s.isMe) { state.mySeatIndex = s.seatIndex; state.myUsername = s.username; }
     return { ...s };
@@ -139,12 +210,44 @@ function enterLobby(data) {
   el.hostControls.style.display = data.isHost ? 'flex' : 'none';
   showScreen('lobby-screen');
   renderSeats();
+  renderPlayersPanel();
 }
 
-// Copy code
 el.btnCopyCode.onclick = () => {
   navigator.clipboard.writeText(state.lobbyCode).then(() => toast('Code copied'));
 };
+
+// ── Players Panel ────────────────────────────────────────────
+el.playersHeader.onclick = () => {
+  state.playersOpen = !state.playersOpen;
+  el.playersPanel.className = state.playersOpen ? 'panel-expanded' : 'panel-collapsed';
+};
+
+function renderPlayersPanel() {
+  const seated = state.seats.filter(s => s);
+  el.playersCount.textContent = seated.length;
+  el.playersList.innerHTML = '';
+  for (const s of seated) {
+    const row = document.createElement('div');
+    row.className = 'player-list-item';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'player-list-name';
+    nameSpan.textContent = s.username;
+    if (s.socketId === state.hostSocketId || (state.isHost && s.isMe)) {
+      const hb = document.createElement('span');
+      hb.className = 'player-list-host';
+      hb.textContent = 'HOST';
+      nameSpan.appendChild(hb);
+    }
+    row.appendChild(nameSpan);
+    const chips = document.createElement('span');
+    chips.className = 'player-list-chips';
+    const ps = state.game.playerStates[s.seatIndex];
+    chips.textContent = (ps ? ps.chips : s.chips).toLocaleString();
+    row.appendChild(chips);
+    el.playersList.appendChild(row);
+  }
+}
 
 // ── Seat Rendering ───────────────────────────────────────────
 function renderSeats() {
@@ -154,7 +257,6 @@ function renderSeats() {
     seatEl.innerHTML = '';
 
     if (!data) {
-      // Empty seat
       const btn = document.createElement('div');
       btn.className = 'seat-empty';
       btn.textContent = 'SIT';
@@ -167,15 +269,15 @@ function renderSeats() {
       cardsDiv.id = `seat-cards-${i}`;
 
       const ps = state.game.playerStates[i];
-      const hasCards = state.game.phase !== 'waiting' && ps && !ps.folded;
+      const inHand = state.game.phase !== 'waiting' && ps && !ps.folded;
 
-      if (hasCards && i === state.mySeatIndex && state.myHand.length === 2) {
-        // Show my hand face-up
-        for (const c of state.myHand) {
-          cardsDiv.appendChild(createCardEl(c, true));
-        }
-      } else if (hasCards) {
-        // Show back of cards
+      // Check if cards should be revealed (all-in runout or own cards)
+      if (inHand && ps.revealedHand) {
+        // All-in runout: show revealed cards face-up
+        for (const c of ps.revealedHand) cardsDiv.appendChild(createCardEl(c, true));
+      } else if (inHand && i === state.mySeatIndex && state.myHand.length === 2) {
+        for (const c of state.myHand) cardsDiv.appendChild(createCardEl(c, true));
+      } else if (inHand) {
         cardsDiv.appendChild(createCardEl(null, false));
         cardsDiv.appendChild(createCardEl(null, false));
       }
@@ -184,8 +286,27 @@ function renderSeats() {
       // Info box
       const info = document.createElement('div');
       info.className = 'seat-info';
-      if (state.game.currentPlayerSeatIndex === i) info.classList.add('active-turn', 'pulse');
+      const isMyTurn = state.game.currentPlayerSeatIndex === i;
+      if (isMyTurn) info.classList.add('active-turn', 'pulse');
       if (ps && ps.folded) info.classList.add('folded');
+
+      // "YOUR TURN" label for the current turn player (at their own seat)
+      if (isMyTurn && i === state.mySeatIndex) {
+        const turnLabel = document.createElement('div');
+        turnLabel.className = 'your-turn-label';
+        turnLabel.textContent = 'YOUR TURN';
+        info.appendChild(turnLabel);
+      }
+
+      // Turn order number
+      const orderIdx = state.game.activeSeatOrder.indexOf(i);
+      if (orderIdx !== -1 && state.game.phase !== 'waiting' && ps && !ps.folded) {
+        const orderBadge = document.createElement('div');
+        orderBadge.className = 'turn-order-num';
+        if (isMyTurn) orderBadge.classList.add('is-current');
+        orderBadge.textContent = orderIdx + 1;
+        info.appendChild(orderBadge);
+      }
 
       const name = document.createElement('span');
       name.className = 'player-name';
@@ -197,7 +318,6 @@ function renderSeats() {
       chips.textContent = (ps ? ps.chips : data.chips).toLocaleString();
       info.appendChild(chips);
 
-      // Bet display
       if (ps && ps.currentBet > 0) {
         const bet = document.createElement('div');
         bet.className = 'player-bet-display';
@@ -205,9 +325,20 @@ function renderSeats() {
         info.appendChild(bet);
       }
 
+      // Best hand label (show for own seat during active game)
+      if (i === state.mySeatIndex && inHand && state.game.phase !== 'waiting') {
+        const handName = getMyBestHandName();
+        if (handName) {
+          const hl = document.createElement('div');
+          hl.className = 'best-hand-label';
+          hl.textContent = handName;
+          info.appendChild(hl);
+        }
+      }
+
       seatEl.appendChild(info);
 
-      // Badges
+      // Badges (dealer/sb/bb)
       const badges = document.createElement('div');
       if (state.game.dealerSeatIndex === i) {
         const b = document.createElement('span'); b.className = 'badge badge-dealer'; b.textContent = 'D'; badges.appendChild(b);
@@ -223,24 +354,42 @@ function renderSeats() {
       }
       if (badges.children.length) seatEl.appendChild(badges);
 
-      // Host kick button (except for self)
+      // Stat badges (wins / busts)
+      const statBadges = document.createElement('div');
+      statBadges.className = 'stat-badges';
+      if (data.winCount > 0) {
+        const wb = document.createElement('span');
+        wb.className = 'stat-badge stat-badge-wins';
+        wb.textContent = `${data.winCount}W`;
+        statBadges.appendChild(wb);
+      }
+      if (data.bustCount > 0) {
+        const bb = document.createElement('span');
+        bb.className = 'stat-badge stat-badge-busts';
+        bb.textContent = `${data.bustCount}L`;
+        statBadges.appendChild(bb);
+      }
+      if (statBadges.children.length) seatEl.appendChild(statBadges);
+
+      // Host kick button
       if (state.isHost && data.socketId !== socket.id && state.game.phase === 'waiting') {
         const kick = document.createElement('button');
         kick.className = 'btn-icon';
         kick.textContent = '✕';
         kick.title = 'Kick player';
-        kick.style.fontSize = '0.65rem';
-        kick.style.marginTop = '4px';
+        kick.style.cssText = 'font-size:0.65rem;margin-top:4px;';
         kick.onclick = (e) => { e.stopPropagation(); socket.emit('kick-player', i); };
         seatEl.appendChild(kick);
       }
     }
   }
+  renderPlayersPanel();
 }
 
+// ── Card Elements ────────────────────────────────────────────
 function createCardEl(card, faceUp) {
-  const el = document.createElement('div');
-  el.className = 'card' + (faceUp ? ' flipped' : '');
+  const div = document.createElement('div');
+  div.className = 'card' + (faceUp ? ' flipped' : '');
   const inner = document.createElement('div');
   inner.className = 'card-inner';
 
@@ -261,13 +410,13 @@ function createCardEl(card, faceUp) {
     front.appendChild(suit);
   }
   inner.appendChild(front);
-  el.appendChild(inner);
-  return el;
+  div.appendChild(inner);
+  return div;
 }
 
-function createCommunityCard(card) {
-  const el = document.createElement('div');
-  el.className = 'card community-card flipped';
+function createCommunityCardEl(card, startFaceDown) {
+  const div = document.createElement('div');
+  div.className = 'card community-card' + (startFaceDown ? '' : ' flipped');
   const inner = document.createElement('div');
   inner.className = 'card-inner';
 
@@ -276,18 +425,20 @@ function createCommunityCard(card) {
   inner.appendChild(back);
 
   const front = document.createElement('div');
-  front.className = 'card-front' + (isRed(card.suit) ? ' red' : '');
-  const rank = document.createElement('span');
-  rank.className = 'card-rank';
-  rank.textContent = dispRank(card.rank);
-  front.appendChild(rank);
-  const suit = document.createElement('span');
-  suit.className = 'card-suit';
-  suit.textContent = SUIT_SYM[card.suit];
-  front.appendChild(suit);
+  front.className = 'card-front' + (card && isRed(card.suit) ? ' red' : '');
+  if (card) {
+    const rank = document.createElement('span');
+    rank.className = 'card-rank';
+    rank.textContent = dispRank(card.rank);
+    front.appendChild(rank);
+    const suit = document.createElement('span');
+    suit.className = 'card-suit';
+    suit.textContent = SUIT_SYM[card.suit];
+    front.appendChild(suit);
+  }
   inner.appendChild(front);
-  el.appendChild(inner);
-  return el;
+  div.appendChild(inner);
+  return div;
 }
 
 // ── Seat Request ─────────────────────────────────────────────
@@ -317,10 +468,13 @@ socket.on('player-seated', (data) => {
     approved: data.approved,
     pendingNextRound: data.pendingNextRound,
     socketId: data.socketId,
+    bustCount: data.bustCount || 0,
+    winCount: data.winCount || 0,
   };
   if (data.socketId === socket.id) {
     state.mySeatIndex = data.seatIndex;
     state.myUsername = data.username;
+    hideModal(); // Dismiss "waiting for approval" modal
   }
   renderSeats();
   addSystemChat(`${data.username} sat down`);
@@ -328,7 +482,7 @@ socket.on('player-seated', (data) => {
 
 socket.on('player-left', (data) => {
   const seat = state.seats[data.seatIndex];
-  if (seat) addSystemChat(`${seat.username} left`);
+  if (seat) addSystemChat(`${seat.username} left the table`);
   if (data.seatIndex === state.mySeatIndex) {
     state.mySeatIndex = -1;
     state.myUsername = null;
@@ -345,6 +499,31 @@ socket.on('kicked', () => {
   state.mySeatIndex = -1; state.myUsername = null; state.myHand = [];
   toast('You were removed');
   renderSeats();
+});
+
+// ── Player Busted ────────────────────────────────────────────
+socket.on('player-busted', (data) => {
+  const seat = state.seats[data.seatIndex];
+  const name = seat ? seat.username : data.username;
+  addSystemChat(`${name} busted out! (${data.bustCount} time${data.bustCount > 1 ? 's' : ''})`);
+  if (data.seatIndex === state.mySeatIndex) {
+    state.mySeatIndex = -1;
+    state.myUsername = null;
+    state.myHand = [];
+    toast('You busted! Sit down to rebuy.');
+  }
+  state.seats[data.seatIndex] = null;
+  renderSeats();
+});
+
+// ── Cards Revealed (all-in runout) ───────────────────────────
+socket.on('cards-revealed', (data) => {
+  for (const { seatIndex, hand } of data.hands) {
+    const ps = state.game.playerStates[seatIndex];
+    if (ps) ps.revealedHand = hand;
+  }
+  renderSeats();
+  addSystemChat('Cards revealed — all in!');
 });
 
 // ── Approval (Host) ──────────────────────────────────────────
@@ -372,8 +551,10 @@ $('#btn-deny').onclick = () => {
 // ── Host changed ─────────────────────────────────────────────
 socket.on('host-changed', (data) => {
   state.isHost = data.newHostSocketId === socket.id;
+  state.hostSocketId = data.newHostSocketId;
   el.hostControls.style.display = state.isHost ? 'flex' : 'none';
   addSystemChat(`${data.username} is now the host`);
+  renderPlayersPanel();
 });
 
 // ── Settings ─────────────────────────────────────────────────
@@ -395,11 +576,41 @@ $('#btn-settings-save').onclick = () => {
 $('#btn-settings-cancel').onclick = hideModal;
 socket.on('settings-updated', (settings) => {
   state.settings = { ...settings };
-  toast('Settings updated');
+  addSystemChat(`Settings updated — Stack: ${settings.startingStack}, Blinds: ${settings.smallBlind}/${settings.bigBlind}`);
 });
 
 // ── Deal / Start ─────────────────────────────────────────────
 el.btnDeal.onclick = () => socket.emit('start-game');
+
+// ── Helpers: get deck center for animation origin ────────────
+function getDeckCenter() {
+  const deckRect = el.deckArea.getBoundingClientRect();
+  return {
+    x: deckRect.left + deckRect.width / 2,
+    y: deckRect.top + deckRect.height / 2,
+  };
+}
+
+function getSeatCardTarget(seatIndex) {
+  const seatEl = $(`.seat[data-seat="${seatIndex}"]`);
+  const rect = seatEl.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + 20 };
+}
+
+// Card sizes for animations (match CSS)
+const SEAT_CARD_W = 58, SEAT_CARD_H = 79;
+const COMM_CARD_W = 72, COMM_CARD_H = 101;
+
+// ── Build turn order ─────────────────────────────────────────
+function buildTurnOrder(players, dealerSeatIndex) {
+  const sorted = [...players].sort((a, b) => a.seatIndex - b.seatIndex);
+  const dIdx = sorted.findIndex(p => p.seatIndex === dealerSeatIndex);
+  const ordered = [];
+  for (let i = 1; i <= sorted.length; i++) {
+    ordered.push(sorted[(dIdx + i) % sorted.length].seatIndex);
+  }
+  return ordered;
+}
 
 // ── Hand Started ─────────────────────────────────────────────
 socket.on('hand-started', (data) => {
@@ -413,6 +624,7 @@ socket.on('hand-started', (data) => {
   state.game.currentPlayerSeatIndex = data.currentPlayerSeatIndex;
   state.game.communityCards = [];
   state.game.playerStates = {};
+  state.displayedCommunityCount = 0;
 
   for (const p of data.players) {
     state.game.playerStates[p.seatIndex] = {
@@ -420,10 +632,12 @@ socket.on('hand-started', (data) => {
       currentBet: p.currentBet,
       folded: false,
       allIn: false,
+      revealedHand: null,
     };
-    // Update seat chips
     if (state.seats[p.seatIndex]) state.seats[p.seatIndex].chips = p.chips;
   }
+
+  state.game.activeSeatOrder = buildTurnOrder(data.players, data.dealerSeatIndex);
 
   el.potAmount.textContent = data.pot > 0 ? `POT ${data.pot.toLocaleString()}` : '';
   el.gameMessage.textContent = '';
@@ -431,22 +645,39 @@ socket.on('hand-started', (data) => {
   el.actionBar.classList.add('hidden');
   state.myActions = null;
 
-  // Animate dealing
+  showDeck();
+
+  addSystemChat(`Hand #${data.handNumber || ''} — Dealer: Seat ${data.dealerSeatIndex + 1}`);
+
+  placeCommunitySlots();
+
   animateDeal(data.players, () => {
     renderSeats();
-    renderCommunityCards();
   });
 });
 
 socket.on('your-hand', (data) => {
   state.myHand = data.hand;
-  // Will render when animateDeal callback fires renderSeats
-  // But if seats already rendered, update now
   if (state.mySeatIndex >= 0) {
     const cardsDiv = document.getElementById(`seat-cards-${state.mySeatIndex}`);
     if (cardsDiv && cardsDiv.children.length === 0) renderSeats();
   }
 });
+
+// ── Place 5 face-down community slots ────────────────────────
+function placeCommunitySlots() {
+  el.communityCards.innerHTML = '';
+  for (let i = 0; i < 5; i++) {
+    const card = createCommunityCardEl(null, true);
+    card.style.opacity = '0';
+    card.dataset.slotIndex = i;
+    el.communityCards.appendChild(card);
+  }
+}
+
+// ── Show / Hide deck ─────────────────────────────────────────
+function showDeck() { el.deckArea.classList.add('visible'); }
+function hideDeck() { el.deckArea.classList.remove('visible'); }
 
 // ── Your Turn ────────────────────────────────────────────────
 socket.on('your-turn', (actions) => {
@@ -456,7 +687,6 @@ socket.on('your-turn', (actions) => {
 
 function showActionBar(actions) {
   el.actionBar.classList.remove('hidden');
-
   el.btnCheck.style.display = actions.actions.includes('check') ? '' : 'none';
   el.btnCall.style.display = actions.actions.includes('call') ? '' : 'none';
   el.callAmount.textContent = actions.toCall > 0 ? actions.toCall.toLocaleString() : '';
@@ -483,11 +713,9 @@ function hideActionBar() {
   state.myActions = null;
 }
 
-// Raise slider/input sync
 el.raiseSlider.oninput = () => { el.raiseInput.value = el.raiseSlider.value; };
 el.raiseInput.oninput = () => { el.raiseSlider.value = el.raiseInput.value; };
 
-// Action buttons
 el.btnFold.onclick = () => { socket.emit('player-action', { action: 'fold' }); hideActionBar(); };
 el.btnCheck.onclick = () => { socket.emit('player-action', { action: 'check' }); hideActionBar(); };
 el.btnCall.onclick = () => { socket.emit('player-action', { action: 'call' }); hideActionBar(); };
@@ -501,16 +729,28 @@ el.btnAllin.onclick = () => { socket.emit('player-action', { action: 'allin' });
 // ── Player Acted ─────────────────────────────────────────────
 socket.on('player-acted', (data) => {
   const ps = state.game.playerStates[data.seatIndex];
+  const seat = state.seats[data.seatIndex];
+  const name = seat ? seat.username : `Seat ${data.seatIndex + 1}`;
+
   if (ps) {
     ps.chips = data.chips;
     ps.currentBet = data.betAmount;
     if (data.action === 'fold') ps.folded = true;
     if (data.action === 'allin' || data.chips === 0) ps.allIn = true;
   }
-  if (state.seats[data.seatIndex]) state.seats[data.seatIndex].chips = data.chips;
+  if (seat) seat.chips = data.chips;
   state.game.pot = data.pot;
   state.game.currentBet = data.currentBet;
   state.game.currentPlayerSeatIndex = data.nextPlayerSeatIndex;
+
+  const actionText = {
+    fold: 'folded',
+    check: 'checked',
+    call: `called ${data.betAmount.toLocaleString()}`,
+    raise: `raised to ${data.betAmount.toLocaleString()}`,
+    allin: `went all in (${data.betAmount.toLocaleString()})`,
+  };
+  addSystemChat(`${name} ${actionText[data.action] || data.action}`);
 
   el.potAmount.textContent = data.pot > 0 ? `POT ${data.pot.toLocaleString()}` : '';
   renderSeats();
@@ -524,13 +764,16 @@ socket.on('new-phase', (data) => {
   state.game.currentPlayerSeatIndex = data.currentPlayerSeatIndex;
   state.game.currentBet = 0;
 
-  // Reset bets
   for (const key in state.game.playerStates) {
     state.game.playerStates[key].currentBet = 0;
   }
 
   el.potAmount.textContent = data.pot > 0 ? `POT ${data.pot.toLocaleString()}` : '';
-  animateCommunityCards(data.communityCards, () => {
+
+  const phaseNames = { flop: 'Flop', turn: 'Turn', river: 'River' };
+  addSystemChat(`— ${phaseNames[data.phase] || data.phase} —`);
+
+  animateNewCommunityCards(data.communityCards, () => {
     renderSeats();
   });
 });
@@ -540,7 +783,6 @@ socket.on('showdown', (data) => {
   state.game.phase = 'showdown';
   state.game.communityCards = data.communityCards;
 
-  // Update player states with revealed info
   for (const p of data.players) {
     state.game.playerStates[p.seatIndex] = {
       ...state.game.playerStates[p.seatIndex],
@@ -552,31 +794,26 @@ socket.on('showdown', (data) => {
     if (state.seats[p.seatIndex]) state.seats[p.seatIndex].chips = p.chips;
   }
 
-  renderCommunityCards();
+  revealAllCommunityCards();
   renderShowdown(data);
 
-  // Build winner message
   const winners = data.potResults.flatMap(pr => pr.winners);
   const msg = winners.map(w => `${w.username} wins ${w.amount.toLocaleString()}`).join(' · ');
   el.gameMessage.textContent = msg;
   hideActionBar();
 
-  // Auto shuffle animation after delay
+  for (const w of winners) addSystemChat(`${w.username} wins ${w.amount.toLocaleString()}`);
+
+  // Update win counts on seat data
+  for (const w of winners) {
+    if (state.seats[w.seatIndex]) {
+      state.seats[w.seatIndex].winCount = (state.seats[w.seatIndex].winCount || 0) + 1;
+    }
+  }
+
   setTimeout(() => {
     animateShuffle(() => {
-      state.game.phase = 'waiting';
-      state.game.communityCards = [];
-      state.game.playerStates = {};
-      state.game.currentPlayerSeatIndex = -1;
-      state.game.dealerSeatIndex = -1;
-      state.game.sbSeatIndex = -1;
-      state.game.bbSeatIndex = -1;
-      state.game.pot = 0;
-      state.game.currentBet = 0;
-      state.myHand = [];
-      el.communityCards.innerHTML = '';
-      el.potAmount.textContent = '';
-      el.gameMessage.textContent = '';
+      resetGameState();
       renderSeats();
     });
   }, 3500);
@@ -585,36 +822,50 @@ socket.on('showdown', (data) => {
 socket.on('hand-complete', (data) => {
   state.game.phase = 'complete';
   for (const p of data.players) {
-    if (state.game.playerStates[p.seatIndex]) {
-      state.game.playerStates[p.seatIndex].chips = p.chips;
-    }
+    if (state.game.playerStates[p.seatIndex]) state.game.playerStates[p.seatIndex].chips = p.chips;
     if (state.seats[p.seatIndex]) state.seats[p.seatIndex].chips = p.chips;
   }
 
   const msg = data.winners.map(w => `${w.username} wins ${w.amount.toLocaleString()}`).join(' · ');
   el.gameMessage.textContent = msg;
   hideActionBar();
+
+  // Update win counts
+  for (const w of data.winners) {
+    if (state.seats[w.seatIndex]) {
+      state.seats[w.seatIndex].winCount = (state.seats[w.seatIndex].winCount || 0) + 1;
+    }
+  }
   renderSeats();
+
+  for (const w of data.winners) addSystemChat(`${w.username} wins ${w.amount.toLocaleString()}`);
 
   setTimeout(() => {
     animateShuffle(() => {
-      state.game.phase = 'waiting';
-      state.game.communityCards = [];
-      state.game.playerStates = {};
-      state.game.currentPlayerSeatIndex = -1;
-      state.game.dealerSeatIndex = -1;
-      state.game.sbSeatIndex = -1;
-      state.game.bbSeatIndex = -1;
-      state.game.pot = 0;
-      state.game.currentBet = 0;
-      state.myHand = [];
-      el.communityCards.innerHTML = '';
-      el.potAmount.textContent = '';
-      el.gameMessage.textContent = '';
+      resetGameState();
       renderSeats();
     });
   }, 2500);
 });
+
+function resetGameState() {
+  state.game.phase = 'waiting';
+  state.game.communityCards = [];
+  state.game.playerStates = {};
+  state.game.currentPlayerSeatIndex = -1;
+  state.game.dealerSeatIndex = -1;
+  state.game.sbSeatIndex = -1;
+  state.game.bbSeatIndex = -1;
+  state.game.pot = 0;
+  state.game.currentBet = 0;
+  state.game.activeSeatOrder = [];
+  state.myHand = [];
+  state.displayedCommunityCount = 0;
+  el.communityCards.innerHTML = '';
+  el.potAmount.textContent = '';
+  el.gameMessage.textContent = '';
+  hideDeck();
+}
 
 // ── Showdown Rendering ───────────────────────────────────────
 function renderShowdown(data) {
@@ -627,60 +878,75 @@ function renderShowdown(data) {
     for (const c of ps.hand) {
       const cardEl = createCardEl(c, false);
       cardsDiv.appendChild(cardEl);
-      // Trigger flip animation
-      setTimeout(() => cardEl.classList.add('flipped'), 100);
+      setTimeout(() => cardEl.classList.add('flipped'), 200);
     }
   }
-  // Update seat infos with hand name
+  // Hand labels
   for (let i = 0; i < 8; i++) {
     const ps = state.game.playerStates[i];
     if (!ps || ps.folded || !ps.bestHand) continue;
     const seatEl = $(`.seat[data-seat="${i}"] .seat-info`);
     if (!seatEl) continue;
-    let handLabel = seatEl.querySelector('.hand-label');
+    let handLabel = seatEl.querySelector('.best-hand-label');
     if (!handLabel) {
       handLabel = document.createElement('div');
-      handLabel.className = 'hand-label';
-      handLabel.style.cssText = 'font-size:0.6rem;color:#aaa;margin-top:2px;letter-spacing:0.05em;';
+      handLabel.className = 'best-hand-label';
       seatEl.appendChild(handLabel);
     }
     handLabel.textContent = ps.bestHand.name;
   }
 }
 
-// ── Community Cards Rendering ────────────────────────────────
-function renderCommunityCards() {
-  el.communityCards.innerHTML = '';
-  for (const c of state.game.communityCards) {
-    el.communityCards.appendChild(createCommunityCard(c));
-  }
+// ── Reveal all community cards (for showdown) ────────────────
+function revealAllCommunityCards() {
+  const slots = el.communityCards.querySelectorAll('.card.community-card');
+  slots.forEach((slot, i) => {
+    if (i < state.game.communityCards.length) {
+      slot.style.opacity = '1';
+      if (!slot.classList.contains('flipped')) {
+        updateCardFace(slot, state.game.communityCards[i]);
+        setTimeout(() => slot.classList.add('flipped'), i * 100);
+      }
+    }
+  });
+}
+
+function updateCardFace(cardEl, card) {
+  const front = cardEl.querySelector('.card-front');
+  front.innerHTML = '';
+  front.className = 'card-front' + (isRed(card.suit) ? ' red' : '');
+  const rank = document.createElement('span');
+  rank.className = 'card-rank';
+  rank.textContent = dispRank(card.rank);
+  front.appendChild(rank);
+  const suit = document.createElement('span');
+  suit.className = 'card-suit';
+  suit.textContent = SUIT_SYM[card.suit];
+  front.appendChild(suit);
 }
 
 // ── Animations ───────────────────────────────────────────────
 
-// Deal animation: cards fly from center to seats
+// Deal cards from deck stack to each seat
 function animateDeal(players, callback) {
-  const tableRect = $('#poker-table').getBoundingClientRect();
-  const deckX = tableRect.left + tableRect.width / 2 - 21;
-  const deckY = tableRect.top + tableRect.height * 0.3;
-
+  const origin = getDeckCenter();
   const totalCards = players.length * 2;
   let dealt = 0;
 
-  // Deal 2 rounds
+  if (totalCards === 0) { if (callback) callback(); return; }
+
   for (let round = 0; round < 2; round++) {
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
-      const seatEl = $(`.seat[data-seat="${p.seatIndex}"]`);
-      const seatRect = seatEl.getBoundingClientRect();
-      const targetX = seatRect.left + seatRect.width / 2 - 21;
-      const targetY = seatRect.top + 10;
-
-      const delay = (round * players.length + i) * 100;
+      const target = getSeatCardTarget(p.seatIndex);
+      const delay = (round * players.length + i) * 130;
 
       setTimeout(() => {
-        const card = document.createElement('div');
-        card.className = 'card card-dealing';
+        const flyCard = document.createElement('div');
+        flyCard.className = 'card card-dealing';
+        flyCard.style.width = SEAT_CARD_W + 'px';
+        flyCard.style.height = SEAT_CARD_H + 'px';
+
         const inner = document.createElement('div');
         inner.className = 'card-inner';
         const back = document.createElement('div');
@@ -689,51 +955,120 @@ function animateDeal(players, callback) {
         const front = document.createElement('div');
         front.className = 'card-front';
         inner.appendChild(front);
-        card.appendChild(inner);
+        flyCard.appendChild(inner);
 
-        card.style.left = deckX + 'px';
-        card.style.top = deckY + 'px';
-        document.body.appendChild(card);
+        const halfW = SEAT_CARD_W / 2;
+        const halfH = SEAT_CARD_H / 2;
+        flyCard.style.left = (origin.x - halfW) + 'px';
+        flyCard.style.top = (origin.y - halfH) + 'px';
+        flyCard.style.opacity = '1';
+        flyCard.style.transition = 'left .45s cubic-bezier(.22,.61,.36,1), top .45s cubic-bezier(.22,.61,.36,1), opacity .15s';
+        document.body.appendChild(flyCard);
 
         requestAnimationFrame(() => {
-          card.style.left = targetX + 'px';
-          card.style.top = targetY + 'px';
+          requestAnimationFrame(() => {
+            flyCard.style.left = (target.x - halfW) + 'px';
+            flyCard.style.top = (target.y - halfH) + 'px';
+          });
         });
 
         setTimeout(() => {
-          card.remove();
-          dealt++;
-          if (dealt === totalCards && callback) callback();
-        }, 500);
+          flyCard.style.opacity = '0';
+          setTimeout(() => {
+            flyCard.remove();
+            dealt++;
+            if (dealt === totalCards && callback) callback();
+          }, 150);
+        }, 470);
       }, delay);
     }
   }
-
-  // Fallback if no players
-  if (totalCards === 0 && callback) callback();
 }
 
-// Community cards animation
-function animateCommunityCards(cards, callback) {
-  el.communityCards.innerHTML = '';
-  const prevCount = el.communityCards.children.length;
+// Animate new community cards — deal from deck face-down, then flip
+function animateNewCommunityCards(allCards, callback) {
+  const newCards = allCards.slice(state.displayedCommunityCount);
+  const startIdx = state.displayedCommunityCount;
+  const origin = getDeckCenter();
 
-  for (let i = 0; i < cards.length; i++) {
-    const cardEl = createCommunityCard(cards[i]);
-    cardEl.style.opacity = '0';
-    cardEl.style.transform = 'translateY(-20px) scale(0.8)';
-    cardEl.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
-    el.communityCards.appendChild(cardEl);
+  let done = 0;
+  if (newCards.length === 0) { if (callback) callback(); return; }
+
+  newCards.forEach((card, ni) => {
+    const slotIdx = startIdx + ni;
+    const slot = el.communityCards.children[slotIdx];
+    if (!slot) {
+      done++;
+      if (done === newCards.length) {
+        state.displayedCommunityCount = allCards.length;
+        if (callback) callback();
+      }
+      return;
+    }
+
+    // Make slot visible (still face down) and set card face data
+    slot.style.opacity = '1';
+    updateCardFace(slot, card);
+
+    // Create flying card from deck
+    const flyCard = document.createElement('div');
+    flyCard.className = 'card community-card card-dealing';
+    flyCard.style.width = COMM_CARD_W + 'px';
+    flyCard.style.height = COMM_CARD_H + 'px';
+
+    const inner = document.createElement('div');
+    inner.className = 'card-inner';
+    const back = document.createElement('div');
+    back.className = 'card-back';
+    inner.appendChild(back);
+    const front = document.createElement('div');
+    front.className = 'card-front';
+    inner.appendChild(front);
+    flyCard.appendChild(inner);
+
+    const halfW = COMM_CARD_W / 2;
+    const halfH = COMM_CARD_H / 2;
+    flyCard.style.left = (origin.x - halfW) + 'px';
+    flyCard.style.top = (origin.y - halfH) + 'px';
+    flyCard.style.opacity = '1';
+    flyCard.style.transition = 'left .5s cubic-bezier(.22,.61,.36,1), top .5s cubic-bezier(.22,.61,.36,1), opacity .15s';
+    document.body.appendChild(flyCard);
+
+    const delay = ni * 200;
 
     setTimeout(() => {
-      cardEl.style.opacity = '1';
-      cardEl.style.transform = 'translateY(0) scale(1)';
-    }, i * 120 + 50);
-  }
+      // Calculate slot target position
+      const slotRect = slot.getBoundingClientRect();
+      const targetX = slotRect.left + slotRect.width / 2 - halfW;
+      const targetY = slotRect.top + slotRect.height / 2 - halfH;
 
-  setTimeout(() => {
-    if (callback) callback();
-  }, cards.length * 120 + 500);
+      // Hide slot while flying card approaches
+      slot.style.visibility = 'hidden';
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          flyCard.style.left = targetX + 'px';
+          flyCard.style.top = targetY + 'px';
+        });
+      });
+
+      // After arrival: remove flyer, show slot face-down, then flip
+      setTimeout(() => {
+        flyCard.remove();
+        slot.style.visibility = 'visible';
+
+        // Flip to reveal
+        setTimeout(() => {
+          slot.classList.add('flipped');
+          done++;
+          if (done === newCards.length) {
+            state.displayedCommunityCount = allCards.length;
+            if (callback) callback();
+          }
+        }, 150);
+      }, 530);
+    }, delay);
+  });
 }
 
 // Shuffle animation
@@ -777,9 +1112,7 @@ function sendChat() {
   el.chatInput.value = '';
 }
 
-socket.on('chat-message', (data) => {
-  addChatMsg(data.username, data.message);
-});
+socket.on('chat-message', (data) => addChatMsg(data.username, data.message));
 
 function addChatMsg(user, text) {
   const div = document.createElement('div');
@@ -801,6 +1134,12 @@ function addSystemChat(text) {
   div.textContent = text;
   el.chatMessages.appendChild(div);
   el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+
+  if (!state.chatOpen) {
+    state.unreadChat++;
+    el.chatBadge.textContent = state.unreadChat;
+    el.chatBadge.classList.remove('hidden');
+  }
 }
 
 function escHtml(str) {
