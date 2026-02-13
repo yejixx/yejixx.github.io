@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>POKER</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Home Screen ──────────────────────────────────────── -->
+  <div id="home-screen" class="screen active">
+    <div class="home-content">
+      <h1 class="logo">POKER</h1>
+      <p class="tagline">Texas Hold'em with friends</p>
+      <div class="home-buttons">
+        <button id="btn-create" class="btn btn-primary">CREATE LOBBY</button>
+        <button id="btn-join" class="btn btn-outline">JOIN LOBBY</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Lobby Screen ─────────────────────────────────────── -->
+  <div id="lobby-screen" class="screen">
+    <div class="lobby-header">
+      <div class="lobby-code-area">
+        <span class="label">LOBBY</span>
+        <span id="lobby-code-value" class="code-text"></span>
+        <button id="btn-copy-code" class="btn-icon" title="Copy code">⧉</button>
+      </div>
+      <div class="lobby-controls" id="host-controls" style="display:none">
+        <button id="btn-settings" class="btn btn-sm btn-outline">SETTINGS</button>
+        <button id="btn-deal" class="btn btn-sm btn-primary">DEAL</button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div id="table-area">
+      <div id="poker-table">
+        <div id="community-cards"></div>
+        <div id="pot-display"><span id="pot-amount"></span></div>
+        <div id="deck-area"></div>
+        <div id="shuffle-area"></div>
+        <div id="game-message"></div>
+      </div>
+      <!-- 8 seats positioned by CSS -->
+      <div class="seat" data-seat="0"></div>
+      <div class="seat" data-seat="1"></div>
+      <div class="seat" data-seat="2"></div>
+      <div class="seat" data-seat="3"></div>
+      <div class="seat" data-seat="4"></div>
+      <div class="seat" data-seat="5"></div>
+      <div class="seat" data-seat="6"></div>
+      <div class="seat" data-seat="7"></div>
+    </div>
+
+    <!-- Action Bar -->
+    <div id="action-bar" class="hidden">
+      <button id="btn-fold" class="btn btn-action">FOLD</button>
+      <button id="btn-check" class="btn btn-action" style="display:none">CHECK</button>
+      <button id="btn-call" class="btn btn-action" style="display:none">CALL <span id="call-amount"></span></button>
+      <div class="raise-group">
+        <input type="range" id="raise-slider" min="0" max="0" value="0" />
+        <input type="number" id="raise-input" />
+        <button id="btn-raise" class="btn btn-action btn-primary">RAISE</button>
+      </div>
+      <button id="btn-allin" class="btn btn-action btn-allin">ALL IN</button>
+    </div>
+
+    <!-- Chat -->
+    <div id="chat-panel" class="chat-collapsed">
+      <div id="chat-header">
+        <span>CHAT</span>
+        <span id="chat-badge" class="chat-badge hidden">0</span>
+      </div>
+      <div id="chat-body">
+        <div id="chat-messages"></div>
+        <div class="chat-input-area">
+          <input type="text" id="chat-input" placeholder="Type a message..." maxlength="200" />
+          <button id="btn-send-chat" class="btn-icon">↵</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Modals ───────────────────────────────────────────── -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+
+    <div id="join-modal" class="modal hidden">
+      <h2>JOIN LOBBY</h2>
+      <input type="text" id="join-code-input" placeholder="Enter code" maxlength="6" autocomplete="off" />
+      <div class="modal-btns">
+        <button id="btn-join-confirm" class="btn btn-primary">JOIN</button>
+        <button id="btn-join-cancel" class="btn btn-outline">CANCEL</button>
+      </div>
+    </div>
+
+    <div id="sit-modal" class="modal hidden">
+      <h2>TAKE A SEAT</h2>
+      <input type="text" id="username-input" placeholder="Your name" maxlength="12" autocomplete="off" />
+      <div class="modal-btns">
+        <button id="btn-sit-confirm" class="btn btn-primary">SIT DOWN</button>
+        <button id="btn-sit-cancel" class="btn btn-outline">CANCEL</button>
+      </div>
+    </div>
+
+    <div id="settings-modal" class="modal hidden">
+      <h2>GAME SETTINGS</h2>
+      <div class="setting-row">
+        <label>Starting Stack</label>
+        <input type="number" id="setting-stack" value="1000" min="100" step="100" />
+      </div>
+      <div class="setting-row">
+        <label>Small Blind</label>
+        <input type="number" id="setting-sb" value="5" min="1" />
+      </div>
+      <div class="setting-row">
+        <label>Big Blind</label>
+        <input type="number" id="setting-bb" value="10" min="2" />
+      </div>
+      <div class="modal-btns">
+        <button id="btn-settings-save" class="btn btn-primary">SAVE</button>
+        <button id="btn-settings-cancel" class="btn btn-outline">CANCEL</button>
+      </div>
+    </div>
+
+    <div id="approval-modal" class="modal hidden">
+      <h2>PLAYER REQUEST</h2>
+      <p id="approval-text"></p>
+      <div class="modal-btns">
+        <button id="btn-approve" class="btn btn-primary">APPROVE</button>
+        <button id="btn-deny" class="btn btn-outline">DENY</button>
+      </div>
+    </div>
+
+    <div id="waiting-modal" class="modal hidden">
+      <h2>WAITING FOR APPROVAL</h2>
+      <div class="spinner"></div>
+    </div>
+
+  </div>
+
+  <!-- Toasts -->
+  <div id="toast-container"></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
