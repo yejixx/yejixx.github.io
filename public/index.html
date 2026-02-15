@@ -12,13 +12,30 @@
   <!-- ── Home Screen ──────────────────────────────────────── -->
   <div id="home-screen" class="screen active">
     <div class="home-content">
-      <h1 class="logo">POKER</h1>
-      <p class="tagline">Texas Hold'em with friends</p>
+      <div class="home-brand">
+        <h1 class="logo">POKER</h1>
+        <p class="tagline">No-limit Texas Hold'em</p>
+      </div>
       <div class="home-buttons">
-        <button id="btn-create" class="btn btn-primary">CREATE LOBBY</button>
-        <button id="btn-join" class="btn btn-outline">JOIN LOBBY</button>
+        <button id="btn-create" class="btn btn-home-primary">CREATE LOBBY</button>
+        <button id="btn-find" class="btn btn-home-secondary">FIND LOBBY</button>
+        <button id="btn-join" class="btn btn-home-outline">JOIN WITH CODE</button>
       </div>
     </div>
+  </div>
+
+  <!-- ── Find Lobby Screen ────────────────────────────────── -->
+  <div id="find-screen" class="screen">
+    <div class="find-header">
+      <button id="btn-find-back" class="btn-icon find-back-btn">←</button>
+      <span class="find-title">FIND LOBBY</span>
+      <button id="btn-find-refresh" class="btn-icon" title="Refresh">↻</button>
+    </div>
+    <div class="find-search-area">
+      <input type="text" id="find-search-input" placeholder="Search by name or code..." autocomplete="off" />
+    </div>
+    <div id="find-lobby-list" class="find-lobby-list"></div>
+    <div id="find-empty" class="find-empty hidden">No public lobbies found</div>
   </div>
 
   <!-- ── Lobby Screen ─────────────────────────────────────── -->
@@ -39,7 +56,7 @@
     <div id="players-panel" class="panel-collapsed">
       <div id="players-header">
         <span>PLAYERS</span>
-        <span id="players-count">0</span>
+        <span id="players-count" class="players-count-badge">0</span>
       </div>
       <div id="players-list"></div>
     </div>
@@ -60,28 +77,20 @@
         <div id="shuffle-area"></div>
         <div id="game-message"></div>
       </div>
-      <!-- 8 seats -->
-      <div class="seat" data-seat="0"></div>
-      <div class="seat" data-seat="1"></div>
-      <div class="seat" data-seat="2"></div>
-      <div class="seat" data-seat="3"></div>
-      <div class="seat" data-seat="4"></div>
-      <div class="seat" data-seat="5"></div>
-      <div class="seat" data-seat="6"></div>
-      <div class="seat" data-seat="7"></div>
+      <!-- Seats are created dynamically by JS -->
     </div>
 
     <!-- Action Bar -->
     <div id="action-bar" class="hidden">
-      <button id="btn-fold" class="btn btn-action">Fold</button>
-      <button id="btn-check" class="btn btn-action" style="display:none">Check</button>
-      <button id="btn-call" class="btn btn-action" style="display:none">Call <span id="call-amount"></span></button>
+      <button id="btn-fold" class="btn btn-action">FOLD</button>
+      <button id="btn-check" class="btn btn-action" style="display:none">CHECK</button>
+      <button id="btn-call" class="btn btn-action" style="display:none">CALL <span id="call-amount"></span></button>
       <div class="raise-group">
         <input type="range" id="raise-slider" min="0" max="0" value="0" />
         <input type="number" id="raise-input" />
-        <button id="btn-raise" class="btn btn-action btn-raise-action">Raise</button>
+        <button id="btn-raise" class="btn btn-action btn-raise-action">RAISE</button>
       </div>
-      <button id="btn-allin" class="btn btn-action btn-allin">All In</button>
+      <button id="btn-allin" class="btn btn-action btn-allin">ALL IN</button>
     </div>
 
     <!-- Chat -->
@@ -105,10 +114,52 @@
 
     <div id="join-modal" class="modal hidden">
       <h2>JOIN LOBBY</h2>
-      <input type="text" id="join-code-input" placeholder="Enter code" maxlength="6" autocomplete="off" />
+      <input type="text" id="join-code-input" placeholder="Enter lobby code" maxlength="6" autocomplete="off" />
       <div class="modal-btns">
         <button id="btn-join-confirm" class="btn btn-primary">JOIN</button>
         <button id="btn-join-cancel" class="btn btn-outline">CANCEL</button>
+      </div>
+    </div>
+
+    <div id="create-modal" class="modal hidden">
+      <h2>CREATE LOBBY</h2>
+      <div class="setting-row">
+        <label>Lobby Name</label>
+        <input type="text" id="create-name" placeholder="Optional" maxlength="24" />
+      </div>
+      <div class="setting-row">
+        <label>Public Lobby</label>
+        <label class="toggle">
+          <input type="checkbox" id="create-public" checked />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <label>Auto-Accept</label>
+        <label class="toggle">
+          <input type="checkbox" id="create-auto-accept" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <label>Max Seats</label>
+        <input type="number" id="create-max-seats" value="8" min="2" max="12" />
+      </div>
+      <div class="setting-row">
+        <label>Starting Stack</label>
+        <input type="number" id="create-stack" value="1000" min="100" step="100" />
+      </div>
+      <div class="setting-row">
+        <label>Small Blind</label>
+        <input type="number" id="create-sb" value="5" min="1" />
+      </div>
+      <div class="setting-row">
+        <label>Big Blind</label>
+        <input type="number" id="create-bb" value="10" min="2" />
+      </div>
+      <div class="modal-btns">
+        <button id="btn-create-confirm" class="btn btn-primary">CREATE</button>
+        <button id="btn-create-cancel" class="btn btn-outline">CANCEL</button>
       </div>
     </div>
 
@@ -122,7 +173,29 @@
     </div>
 
     <div id="settings-modal" class="modal hidden">
-      <h2>GAME SETTINGS</h2>
+      <h2>LOBBY SETTINGS</h2>
+      <div class="setting-row">
+        <label>Lobby Name</label>
+        <input type="text" id="setting-name" maxlength="24" />
+      </div>
+      <div class="setting-row">
+        <label>Public Lobby</label>
+        <label class="toggle">
+          <input type="checkbox" id="setting-public" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <label>Auto-Accept</label>
+        <label class="toggle">
+          <input type="checkbox" id="setting-auto-accept" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <label>Max Seats</label>
+        <input type="number" id="setting-max-seats" value="8" min="2" max="12" />
+      </div>
       <div class="setting-row">
         <label>Starting Stack</label>
         <input type="number" id="setting-stack" value="1000" min="100" step="100" />

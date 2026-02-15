@@ -5,17 +5,14 @@ const socket = io();
 // ── Suit / Rank helpers ──────────────────────────────────────
 const SUIT_SYM = { s: '♠', h: '♥', d: '♦', c: '♣' };
 const RANK_DISP = { T: '10', J: 'J', Q: 'Q', K: 'K', A: 'A' };
-const RANKS_ORDER = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
-const HAND_NAMES = [
-  'High Card','Pair','Two Pair','Three of a Kind',
-  'Straight','Flush','Full House','Four of a Kind',
-  'Straight Flush','Royal Flush',
-];
 function dispRank(r) { return RANK_DISP[r] || r; }
 function isRed(suit) { return suit === 'h' || suit === 'd'; }
 
-// ── Client-side Hand Evaluation (for "best hand" display) ────
-function rvC(rank) { return RANKS_ORDER.indexOf(rank) + 2; }
+// ── Client-Side Hand Evaluator ───────────────────────────────
+const RANK_ORD = ['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
+const HAND_LABELS = ['High Card','Pair','Two Pair','Three of a Kind','Straight','Flush','Full House','Four of a Kind','Straight Flush','Royal Flush'];
+
+function rvC(r) { return RANK_ORD.indexOf(r) + 2; }
 
 function eval5C(cards) {
   const vals = cards.map(c => rvC(c.rank)).sort((a, b) => b - a);
@@ -30,20 +27,21 @@ function eval5C(cards) {
     }
   }
   const freq = {};
-  vals.forEach(v => (freq[v] = (freq[v] || 0) + 1));
-  const groups = Object.entries(freq)
-    .map(([v, c]) => ({ val: parseInt(v), count: c }))
-    .sort((a, b) => b.count - a.count || b.val - a.val);
+  vals.forEach(v => freq[v] = (freq[v] || 0) + 1);
+  const groups = Object.entries(freq).map(([v, c]) => ({ val: +v, count: c })).sort((a, b) => b.count - a.count || b.val - a.val);
 
-  if (isStraight && isFlush) return { hr: straightHigh === 14 ? 9 : 8, name: HAND_NAMES[straightHigh === 14 ? 9 : 8] };
-  if (groups[0].count === 4) return { hr: 7, name: HAND_NAMES[7] };
-  if (groups[0].count === 3 && groups.length >= 2 && groups[1].count === 2) return { hr: 6, name: HAND_NAMES[6] };
-  if (isFlush) return { hr: 5, name: HAND_NAMES[5] };
-  if (isStraight) return { hr: 4, name: HAND_NAMES[4] };
-  if (groups[0].count === 3) return { hr: 3, name: HAND_NAMES[3] };
-  if (groups[0].count === 2 && groups.length >= 2 && groups[1].count === 2) return { hr: 2, name: HAND_NAMES[2] };
-  if (groups[0].count === 2) return { hr: 1, name: HAND_NAMES[1] };
-  return { hr: 0, name: HAND_NAMES[0] };
+  if (isStraight && isFlush) { const r = straightHigh === 14 ? 9 : 8; return { rank: r, name: HAND_LABELS[r], score: [r, straightHigh] }; }
+  if (groups[0].count === 4) return { rank: 7, name: HAND_LABELS[7], score: [7, groups[0].val, groups[1].val] };
+  if (groups[0].count === 3 && groups.length >= 2 && groups[1].count === 2) return { rank: 6, name: HAND_LABELS[6], score: [6, groups[0].val, groups[1].val] };
+  if (isFlush) return { rank: 5, name: HAND_LABELS[5], score: [5, ...vals] };
+  if (isStraight) return { rank: 4, name: HAND_LABELS[4], score: [4, straightHigh] };
+  if (groups[0].count === 3) return { rank: 3, name: HAND_LABELS[3], score: [3, groups[0].val] };
+  if (groups[0].count === 2 && groups.length >= 2 && groups[1].count === 2) {
+    const p1 = Math.max(groups[0].val, groups[1].val), p2 = Math.min(groups[0].val, groups[1].val);
+    return { rank: 2, name: HAND_LABELS[2], score: [2, p1, p2] };
+  }
+  if (groups[0].count === 2) return { rank: 1, name: HAND_LABELS[1], score: [1, groups[0].val] };
+  return { rank: 0, name: HAND_LABELS[0], score: [0, ...vals] };
 }
 
 function combosC(arr, k) {
@@ -53,20 +51,22 @@ function combosC(arr, k) {
   return [...combosC(rest, k - 1).map(c => [first, ...c]), ...combosC(rest, k)];
 }
 
-function getMyBestHandName() {
-  if (state.myHand.length === 0) return '';
-  const all = [...state.myHand, ...state.game.communityCards];
-  if (all.length < 5) {
-    // Preflop — check for pocket pair
-    if (all.length >= 2 && all[0].rank === all[1].rank) return 'Pair';
-    return 'High Card';
+function cmpScores(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0);
   }
+  return 0;
+}
+
+function getMyBestHand(hole, community) {
+  if (hole.length < 2 || community.length < 3) return null;
+  const all = [...hole, ...community];
   let best = null;
   for (const combo of combosC(all, 5)) {
     const r = eval5C(combo);
-    if (!best || r.hr > best.hr) best = r;
+    if (!best || cmpScores(r.score, best.score) > 0) best = r;
   }
-  return best ? best.name : '';
+  return best;
 }
 
 // ── State ────────────────────────────────────────────────────
@@ -78,8 +78,12 @@ const state = {
   mySeatIndex: -1,
   myUsername: null,
   myHand: [],
-  seats: Array(8).fill(null),
+  maxSeats: 8,
+  seats: [],
   settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10 },
+  lobbyName: '',
+  isPublic: true,
+  autoAccept: false,
   game: {
     phase: 'waiting',
     communityCards: [],
@@ -98,6 +102,7 @@ const state = {
   unreadChat: 0,
   playersOpen: false,
   displayedCommunityCount: 0,
+  findRefreshTimer: null,
 };
 
 // ── DOM refs ─────────────────────────────────────────────────
@@ -106,9 +111,16 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 const el = {
   homeScreen: $('#home-screen'),
+  findScreen: $('#find-screen'),
   lobbyScreen: $('#lobby-screen'),
   btnCreate: $('#btn-create'),
+  btnFind: $('#btn-find'),
   btnJoin: $('#btn-join'),
+  btnFindBack: $('#btn-find-back'),
+  btnFindRefresh: $('#btn-find-refresh'),
+  findSearchInput: $('#find-search-input'),
+  findLobbyList: $('#find-lobby-list'),
+  findEmpty: $('#find-empty'),
   lobbyCodeVal: $('#lobby-code-value'),
   btnCopyCode: $('#btn-copy-code'),
   hostControls: $('#host-controls'),
@@ -143,6 +155,7 @@ const el = {
   modalOverlay: $('#modal-overlay'),
   joinModal: $('#join-modal'),
   joinCodeInput: $('#join-code-input'),
+  createModal: $('#create-modal'),
   sitModal: $('#sit-modal'),
   usernameInput: $('#username-input'),
   settingsModal: $('#settings-modal'),
@@ -179,8 +192,36 @@ function toast(msg) {
 }
 
 // ── Home Screen ──────────────────────────────────────────────
-el.btnCreate.onclick = () => socket.emit('create-lobby');
-el.btnJoin.onclick = () => { el.joinCodeInput.value = ''; showModal('join-modal'); el.joinCodeInput.focus(); };
+el.btnCreate.onclick = () => {
+  $('#create-name').value = '';
+  $('#create-public').checked = true;
+  $('#create-auto-accept').checked = false;
+  $('#create-max-seats').value = '8';
+  $('#create-stack').value = '1000';
+  $('#create-sb').value = '5';
+  $('#create-bb').value = '10';
+  showModal('create-modal');
+  $('#create-name').focus();
+};
+
+$('#btn-create-confirm').onclick = () => {
+  socket.emit('create-lobby', {
+    lobbyName: $('#create-name').value.trim(),
+    isPublic: $('#create-public').checked,
+    autoAccept: $('#create-auto-accept').checked,
+    maxSeats: parseInt($('#create-max-seats').value) || 8,
+    startingStack: parseInt($('#create-stack').value) || 1000,
+    smallBlind: parseInt($('#create-sb').value) || 5,
+    bigBlind: parseInt($('#create-bb').value) || 10,
+  });
+};
+$('#btn-create-cancel').onclick = hideModal;
+
+el.btnJoin.onclick = () => {
+  el.joinCodeInput.value = '';
+  showModal('join-modal');
+  el.joinCodeInput.focus();
+};
 $('#btn-join-confirm').onclick = () => {
   const code = el.joinCodeInput.value.trim();
   if (code.length < 4) { toast('Enter a valid code'); return; }
@@ -189,26 +230,129 @@ $('#btn-join-confirm').onclick = () => {
 $('#btn-join-cancel').onclick = hideModal;
 el.joinCodeInput.addEventListener('keydown', e => { if (e.key === 'Enter') $('#btn-join-confirm').click(); });
 
+// ── Find Lobby Screen ────────────────────────────────────────
+el.btnFind.onclick = () => {
+  showScreen('find-screen');
+  el.findSearchInput.value = '';
+  socket.emit('list-public-lobbies');
+  if (state.findRefreshTimer) clearInterval(state.findRefreshTimer);
+  state.findRefreshTimer = setInterval(() => {
+    if (state.screen === 'find') socket.emit('list-public-lobbies');
+  }, 5000);
+};
+
+el.btnFindBack.onclick = () => {
+  showScreen('home-screen');
+  if (state.findRefreshTimer) { clearInterval(state.findRefreshTimer); state.findRefreshTimer = null; }
+};
+
+el.btnFindRefresh.onclick = () => socket.emit('list-public-lobbies');
+
+el.findSearchInput.oninput = () => filterLobbyList();
+
+let allPublicLobbies = [];
+
+socket.on('public-lobbies', (list) => {
+  allPublicLobbies = list;
+  filterLobbyList();
+});
+
+function filterLobbyList() {
+  const q = el.findSearchInput.value.trim().toLowerCase();
+  const filtered = q
+    ? allPublicLobbies.filter(l => l.lobbyName.toLowerCase().includes(q) || l.code.toLowerCase().includes(q))
+    : allPublicLobbies;
+
+  el.findLobbyList.innerHTML = '';
+  el.findEmpty.classList.toggle('hidden', filtered.length > 0);
+
+  for (const lobby of filtered) {
+    const card = document.createElement('div');
+    card.className = 'lobby-card';
+
+    const info = document.createElement('div');
+    info.className = 'lobby-card-info';
+
+    const topRow = document.createElement('div');
+    topRow.className = 'lobby-card-top';
+
+    const name = document.createElement('span');
+    name.className = 'lobby-card-name';
+    name.textContent = lobby.lobbyName;
+    topRow.appendChild(name);
+
+    const code = document.createElement('span');
+    code.className = 'lobby-card-code';
+    code.textContent = lobby.code;
+    topRow.appendChild(code);
+
+    const status = document.createElement('span');
+    status.className = 'lobby-card-status ' + (lobby.gameInProgress ? 'in-progress' : 'waiting');
+    status.textContent = lobby.gameInProgress ? 'IN GAME' : 'WAITING';
+    topRow.appendChild(status);
+
+    info.appendChild(topRow);
+
+    const details = document.createElement('div');
+    details.className = 'lobby-card-details';
+    details.innerHTML = `<span>${lobby.playerCount}/${lobby.maxSeats} players</span><span>Stack: ${lobby.startingStack.toLocaleString()}</span><span>Blinds: ${lobby.smallBlind}/${lobby.bigBlind}</span>`;
+    info.appendChild(details);
+
+    card.appendChild(info);
+
+    const joinBtn = document.createElement('button');
+    joinBtn.className = 'lobby-card-join';
+    joinBtn.textContent = 'JOIN';
+    joinBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (state.findRefreshTimer) { clearInterval(state.findRefreshTimer); state.findRefreshTimer = null; }
+      socket.emit('join-lobby', lobby.code);
+    };
+    card.appendChild(joinBtn);
+
+    card.onclick = () => {
+      if (state.findRefreshTimer) { clearInterval(state.findRefreshTimer); state.findRefreshTimer = null; }
+      socket.emit('join-lobby', lobby.code);
+    };
+
+    el.findLobbyList.appendChild(card);
+  }
+}
+
 // ── Lobby Events ─────────────────────────────────────────────
 socket.on('lobby-created', (data) => { state.hostSocketId = socket.id; enterLobby(data); });
 socket.on('lobby-joined', (data) => enterLobby(data));
 
 function enterLobby(data) {
   hideModal();
+  if (state.findRefreshTimer) { clearInterval(state.findRefreshTimer); state.findRefreshTimer = null; }
+
   state.lobbyCode = data.code;
   state.isHost = data.isHost;
   state.settings = { ...data.settings };
+  state.lobbyName = data.lobbyName || data.code;
+  state.isPublic = data.isPublic !== false;
+  state.autoAccept = !!data.autoAccept;
+  state.maxSeats = data.maxSeats || 8;
   state.mySeatIndex = -1;
   state.myUsername = null;
-  state.seats = data.seats.map((s) => {
-    if (!s) return null;
-    if (s.isMe) { state.mySeatIndex = s.seatIndex; state.myUsername = s.username; }
-    return { ...s };
-  });
+  state.myHand = [];
+  state.seats = [];
+
+  for (let i = 0; i < state.maxSeats; i++) {
+    const s = data.seats[i] || null;
+    if (s) {
+      if (s.isMe) { state.mySeatIndex = s.seatIndex; state.myUsername = s.username; }
+      state.seats.push({ ...s });
+    } else {
+      state.seats.push(null);
+    }
+  }
 
   el.lobbyCodeVal.textContent = data.code;
   el.hostControls.style.display = data.isHost ? 'flex' : 'none';
   showScreen('lobby-screen');
+  createAndPositionSeats(state.maxSeats);
   renderSeats();
   renderPlayersPanel();
 }
@@ -249,10 +393,33 @@ function renderPlayersPanel() {
   }
 }
 
+// ── Dynamic Seat Creation ────────────────────────────────────
+function createAndPositionSeats(maxSeats) {
+  // Remove existing seats
+  el.tableArea.querySelectorAll('.seat').forEach(e => e.remove());
+
+  for (let i = 0; i < maxSeats; i++) {
+    const seatEl = document.createElement('div');
+    seatEl.className = 'seat';
+    seatEl.dataset.seat = i;
+
+    // Position around ellipse (counterclockwise from bottom)
+    const t = (2 * Math.PI / maxSeats) * i;
+    const xFactor = -Math.sin(t);
+    const yFactor = Math.cos(t);
+
+    seatEl.style.left = `calc(50% + ${xFactor.toFixed(4)} * min(38vw, 400px))`;
+    seatEl.style.top = `calc(50% + ${yFactor.toFixed(4)} * min(28vw, 295px))`;
+
+    el.tableArea.appendChild(seatEl);
+  }
+}
+
 // ── Seat Rendering ───────────────────────────────────────────
 function renderSeats() {
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < state.maxSeats; i++) {
     const seatEl = $(`.seat[data-seat="${i}"]`);
+    if (!seatEl) continue;
     const data = state.seats[i];
     seatEl.innerHTML = '';
 
@@ -271,12 +438,15 @@ function renderSeats() {
       const ps = state.game.playerStates[i];
       const inHand = state.game.phase !== 'waiting' && ps && !ps.folded;
 
-      // Check if cards should be revealed (all-in runout or own cards)
-      if (inHand && ps.revealedHand) {
-        // All-in runout: show revealed cards face-up
-        for (const c of ps.revealedHand) cardsDiv.appendChild(createCardEl(c, true));
-      } else if (inHand && i === state.mySeatIndex && state.myHand.length === 2) {
+      if (inHand && i === state.mySeatIndex && state.myHand.length === 2) {
         for (const c of state.myHand) cardsDiv.appendChild(createCardEl(c, true));
+      } else if (inHand && ps && ps.revealedHand) {
+        // All-in revealed cards
+        for (const c of ps.revealedHand) {
+          const cardEl = createCardEl(c, false);
+          cardsDiv.appendChild(cardEl);
+          setTimeout(() => cardEl.classList.add('flipped'), 100);
+        }
       } else if (inHand) {
         cardsDiv.appendChild(createCardEl(null, false));
         cardsDiv.appendChild(createCardEl(null, false));
@@ -286,98 +456,111 @@ function renderSeats() {
       // Info box
       const info = document.createElement('div');
       info.className = 'seat-info';
-      const isMyTurn = state.game.currentPlayerSeatIndex === i;
-      if (isMyTurn) info.classList.add('active-turn', 'pulse');
+      if (state.game.currentPlayerSeatIndex === i) info.classList.add('active-turn', 'pulse');
       if (ps && ps.folded) info.classList.add('folded');
-
-      // "YOUR TURN" label for the current turn player (at their own seat)
-      if (isMyTurn && i === state.mySeatIndex) {
-        const turnLabel = document.createElement('div');
-        turnLabel.className = 'your-turn-label';
-        turnLabel.textContent = 'YOUR TURN';
-        info.appendChild(turnLabel);
-      }
 
       // Turn order number
       const orderIdx = state.game.activeSeatOrder.indexOf(i);
       if (orderIdx !== -1 && state.game.phase !== 'waiting' && ps && !ps.folded) {
         const orderBadge = document.createElement('div');
         orderBadge.className = 'turn-order-num';
-        if (isMyTurn) orderBadge.classList.add('is-current');
+        if (state.game.currentPlayerSeatIndex === i) orderBadge.classList.add('is-current');
         orderBadge.textContent = orderIdx + 1;
         info.appendChild(orderBadge);
       }
 
-      const name = document.createElement('span');
-      name.className = 'player-name';
-      name.textContent = data.username;
-      info.appendChild(name);
+      // YOUR TURN label
+      if (state.game.currentPlayerSeatIndex === i && i === state.mySeatIndex) {
+        const turnLabel = document.createElement('div');
+        turnLabel.className = 'your-turn-label';
+        turnLabel.textContent = 'YOUR TURN';
+        info.appendChild(turnLabel);
+      }
 
-      const chips = document.createElement('span');
-      chips.className = 'player-chips';
-      chips.textContent = (ps ? ps.chips : data.chips).toLocaleString();
-      info.appendChild(chips);
+      // Name row with position badges
+      const nameRow = document.createElement('div');
+      nameRow.className = 'seat-name-row';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'player-name';
+      nameSpan.textContent = data.username;
+      nameRow.appendChild(nameSpan);
 
+      if (state.game.dealerSeatIndex === i) {
+        const b = document.createElement('span'); b.className = 'badge badge-dealer'; b.textContent = 'D'; nameRow.appendChild(b);
+      }
+      if (state.game.sbSeatIndex === i) {
+        const b = document.createElement('span'); b.className = 'badge badge-sb'; b.textContent = 'SB'; nameRow.appendChild(b);
+      }
+      if (state.game.bbSeatIndex === i) {
+        const b = document.createElement('span'); b.className = 'badge badge-bb'; b.textContent = 'BB'; nameRow.appendChild(b);
+      }
+      info.appendChild(nameRow);
+
+      // Chips row
+      const chipsRow = document.createElement('div');
+      chipsRow.className = 'seat-chips-row';
+      const chipsSpan = document.createElement('span');
+      chipsSpan.className = 'player-chips';
+      chipsSpan.textContent = (ps ? ps.chips : data.chips).toLocaleString();
+      chipsRow.appendChild(chipsSpan);
+      info.appendChild(chipsRow);
+
+      // Bet display
       if (ps && ps.currentBet > 0) {
         const bet = document.createElement('div');
         bet.className = 'player-bet-display';
-        bet.textContent = ps.currentBet.toLocaleString();
+        bet.textContent = 'BET ' + ps.currentBet.toLocaleString();
         info.appendChild(bet);
       }
 
-      // Best hand label (show for own seat during active game)
-      if (i === state.mySeatIndex && inHand && state.game.phase !== 'waiting') {
-        const handName = getMyBestHandName();
-        if (handName) {
-          const hl = document.createElement('div');
-          hl.className = 'best-hand-label';
-          hl.textContent = handName;
-          info.appendChild(hl);
+      // Best hand display (for own cards)
+      if (i === state.mySeatIndex && state.myHand.length === 2 && state.game.communityCards.length >= 3) {
+        const best = getMyBestHand(state.myHand, state.game.communityCards);
+        if (best) {
+          const handLabel = document.createElement('div');
+          handLabel.className = 'best-hand-label';
+          handLabel.textContent = best.name;
+          info.appendChild(handLabel);
         }
+      }
+
+      // Stat badges
+      const wc = data.winCount || 0;
+      const bc = data.bustCount || 0;
+      if (wc > 0 || bc > 0) {
+        const statDiv = document.createElement('div');
+        statDiv.className = 'stat-badges';
+        if (wc > 0) {
+          const ws = document.createElement('span');
+          ws.className = 'stat-badge stat-badge-wins';
+          ws.textContent = `W ${wc}`;
+          statDiv.appendChild(ws);
+        }
+        if (bc > 0) {
+          const bs = document.createElement('span');
+          bs.className = 'stat-badge stat-badge-busts';
+          bs.textContent = `B ${bc}`;
+          statDiv.appendChild(bs);
+        }
+        info.appendChild(statDiv);
       }
 
       seatEl.appendChild(info);
 
-      // Badges (dealer/sb/bb)
-      const badges = document.createElement('div');
-      if (state.game.dealerSeatIndex === i) {
-        const b = document.createElement('span'); b.className = 'badge badge-dealer'; b.textContent = 'D'; badges.appendChild(b);
-      }
-      if (state.game.sbSeatIndex === i) {
-        const b = document.createElement('span'); b.className = 'badge badge-sb'; b.textContent = 'SB'; badges.appendChild(b);
-      }
-      if (state.game.bbSeatIndex === i) {
-        const b = document.createElement('span'); b.className = 'badge badge-bb'; b.textContent = 'BB'; badges.appendChild(b);
-      }
+      // Pending next round badge
       if (data.pendingNextRound) {
-        const b = document.createElement('span'); b.className = 'badge badge-pending'; b.textContent = 'NEXT ROUND'; badges.appendChild(b);
+        const pb = document.createElement('span');
+        pb.className = 'badge badge-pending';
+        pb.textContent = 'NEXT ROUND';
+        seatEl.appendChild(pb);
       }
-      if (badges.children.length) seatEl.appendChild(badges);
-
-      // Stat badges (wins / busts)
-      const statBadges = document.createElement('div');
-      statBadges.className = 'stat-badges';
-      if (data.winCount > 0) {
-        const wb = document.createElement('span');
-        wb.className = 'stat-badge stat-badge-wins';
-        wb.textContent = `${data.winCount}W`;
-        statBadges.appendChild(wb);
-      }
-      if (data.bustCount > 0) {
-        const bb = document.createElement('span');
-        bb.className = 'stat-badge stat-badge-busts';
-        bb.textContent = `${data.bustCount}L`;
-        statBadges.appendChild(bb);
-      }
-      if (statBadges.children.length) seatEl.appendChild(statBadges);
 
       // Host kick button
       if (state.isHost && data.socketId !== socket.id && state.game.phase === 'waiting') {
         const kick = document.createElement('button');
-        kick.className = 'btn-icon';
-        kick.textContent = '✕';
+        kick.className = 'btn-kick';
+        kick.textContent = '✕ KICK';
         kick.title = 'Kick player';
-        kick.style.cssText = 'font-size:0.65rem;margin-top:4px;';
         kick.onclick = (e) => { e.stopPropagation(); socket.emit('kick-player', i); };
         seatEl.appendChild(kick);
       }
@@ -474,7 +657,7 @@ socket.on('player-seated', (data) => {
   if (data.socketId === socket.id) {
     state.mySeatIndex = data.seatIndex;
     state.myUsername = data.username;
-    hideModal(); // Dismiss "waiting for approval" modal
+    hideModal(); // dismiss waiting-approval
   }
   renderSeats();
   addSystemChat(`${data.username} sat down`);
@@ -499,31 +682,6 @@ socket.on('kicked', () => {
   state.mySeatIndex = -1; state.myUsername = null; state.myHand = [];
   toast('You were removed');
   renderSeats();
-});
-
-// ── Player Busted ────────────────────────────────────────────
-socket.on('player-busted', (data) => {
-  const seat = state.seats[data.seatIndex];
-  const name = seat ? seat.username : data.username;
-  addSystemChat(`${name} busted out! (${data.bustCount} time${data.bustCount > 1 ? 's' : ''})`);
-  if (data.seatIndex === state.mySeatIndex) {
-    state.mySeatIndex = -1;
-    state.myUsername = null;
-    state.myHand = [];
-    toast('You busted! Sit down to rebuy.');
-  }
-  state.seats[data.seatIndex] = null;
-  renderSeats();
-});
-
-// ── Cards Revealed (all-in runout) ───────────────────────────
-socket.on('cards-revealed', (data) => {
-  for (const { seatIndex, hand } of data.hands) {
-    const ps = state.game.playerStates[seatIndex];
-    if (ps) ps.revealedHand = hand;
-  }
-  renderSeats();
-  addSystemChat('Cards revealed — all in!');
 });
 
 // ── Approval (Host) ──────────────────────────────────────────
@@ -559,6 +717,10 @@ socket.on('host-changed', (data) => {
 
 // ── Settings ─────────────────────────────────────────────────
 el.btnSettings.onclick = () => {
+  $('#setting-name').value = state.lobbyName || '';
+  $('#setting-public').checked = state.isPublic;
+  $('#setting-auto-accept').checked = state.autoAccept;
+  $('#setting-max-seats').value = state.maxSeats;
   $('#setting-stack').value = state.settings.startingStack;
   $('#setting-sb').value = state.settings.smallBlind;
   $('#setting-bb').value = state.settings.bigBlind;
@@ -566,6 +728,10 @@ el.btnSettings.onclick = () => {
 };
 $('#btn-settings-save').onclick = () => {
   const s = {
+    lobbyName: $('#setting-name').value.trim(),
+    isPublic: $('#setting-public').checked,
+    autoAccept: $('#setting-auto-accept').checked,
+    maxSeats: parseInt($('#setting-max-seats').value) || 8,
     startingStack: parseInt($('#setting-stack').value) || 1000,
     smallBlind: parseInt($('#setting-sb').value) || 5,
     bigBlind: parseInt($('#setting-bb').value) || 10,
@@ -574,9 +740,26 @@ $('#btn-settings-save').onclick = () => {
   hideModal();
 };
 $('#btn-settings-cancel').onclick = hideModal;
+
 socket.on('settings-updated', (settings) => {
-  state.settings = { ...settings };
-  addSystemChat(`Settings updated — Stack: ${settings.startingStack}, Blinds: ${settings.smallBlind}/${settings.bigBlind}`);
+  state.settings.startingStack = settings.startingStack;
+  state.settings.smallBlind = settings.smallBlind;
+  state.settings.bigBlind = settings.bigBlind;
+  if (settings.maxSeats !== undefined) {
+    const oldMax = state.maxSeats;
+    state.maxSeats = settings.maxSeats;
+    if (settings.maxSeats !== oldMax) {
+      // Resize seats array
+      while (state.seats.length < settings.maxSeats) state.seats.push(null);
+      if (state.seats.length > settings.maxSeats) state.seats.length = settings.maxSeats;
+      createAndPositionSeats(settings.maxSeats);
+    }
+  }
+  if (settings.autoAccept !== undefined) state.autoAccept = settings.autoAccept;
+  if (settings.isPublic !== undefined) state.isPublic = settings.isPublic;
+  if (settings.lobbyName !== undefined) state.lobbyName = settings.lobbyName;
+  addSystemChat(`Settings updated — Stack: ${settings.startingStack}, Blinds: ${settings.smallBlind}/${settings.bigBlind}, Seats: ${state.maxSeats}`);
+  renderSeats();
 });
 
 // ── Deal / Start ─────────────────────────────────────────────
@@ -594,12 +777,19 @@ function getDeckCenter() {
 function getSeatCardTarget(seatIndex) {
   const seatEl = $(`.seat[data-seat="${seatIndex}"]`);
   const rect = seatEl.getBoundingClientRect();
-  return { x: rect.left + rect.width / 2, y: rect.top + 20 };
+  return { x: rect.left + rect.width / 2, y: rect.top + 16 };
 }
 
-// Card sizes for animations (match CSS)
-const SEAT_CARD_W = 58, SEAT_CARD_H = 79;
-const COMM_CARD_W = 72, COMM_CARD_H = 101;
+function getCommunityCardTarget(index) {
+  const containerRect = el.communityCards.getBoundingClientRect();
+  const cardW = 60, gap = 8;
+  const totalW = 5 * cardW + 4 * gap;
+  const startX = containerRect.left + (containerRect.width - totalW) / 2;
+  return {
+    x: startX + index * (cardW + gap) + cardW / 2,
+    y: containerRect.top + containerRect.height / 2,
+  };
+}
 
 // ── Build turn order ─────────────────────────────────────────
 function buildTurnOrder(players, dealerSeatIndex) {
@@ -632,7 +822,6 @@ socket.on('hand-started', (data) => {
       currentBet: p.currentBet,
       folded: false,
       allIn: false,
-      revealedHand: null,
     };
     if (state.seats[p.seatIndex]) state.seats[p.seatIndex].chips = p.chips;
   }
@@ -646,9 +835,7 @@ socket.on('hand-started', (data) => {
   state.myActions = null;
 
   showDeck();
-
   addSystemChat(`Hand #${data.handNumber || ''} — Dealer: Seat ${data.dealerSeatIndex + 1}`);
-
   placeCommunitySlots();
 
   animateDeal(data.players, () => {
@@ -683,6 +870,7 @@ function hideDeck() { el.deckArea.classList.remove('visible'); }
 socket.on('your-turn', (actions) => {
   state.myActions = actions;
   showActionBar(actions);
+  renderSeats(); // refresh to show YOUR TURN label
 });
 
 function showActionBar(actions) {
@@ -778,6 +966,31 @@ socket.on('new-phase', (data) => {
   });
 });
 
+// ── Cards Revealed (all-in runout) ───────────────────────────
+socket.on('cards-revealed', (data) => {
+  for (const h of data.hands) {
+    const ps = state.game.playerStates[h.seatIndex];
+    if (ps) ps.revealedHand = h.hand;
+  }
+  renderSeats();
+});
+
+// ── Player Busted ────────────────────────────────────────────
+socket.on('player-busted', (data) => {
+  const seat = state.seats[data.seatIndex];
+  if (seat) {
+    addSystemChat(`${data.username} busted out (bust #${data.bustCount})`);
+  }
+  if (data.seatIndex === state.mySeatIndex) {
+    state.mySeatIndex = -1;
+    state.myUsername = null;
+    state.myHand = [];
+    toast('You busted! Sit down again to rebuy.');
+  }
+  state.seats[data.seatIndex] = null;
+  renderSeats();
+});
+
 // ── Showdown ─────────────────────────────────────────────────
 socket.on('showdown', (data) => {
   state.game.phase = 'showdown';
@@ -804,11 +1017,10 @@ socket.on('showdown', (data) => {
 
   for (const w of winners) addSystemChat(`${w.username} wins ${w.amount.toLocaleString()}`);
 
-  // Update win counts on seat data
+  // Update win counts locally
   for (const w of winners) {
-    if (state.seats[w.seatIndex]) {
-      state.seats[w.seatIndex].winCount = (state.seats[w.seatIndex].winCount || 0) + 1;
-    }
+    const seat = state.seats[w.seatIndex];
+    if (seat) seat.winCount = (seat.winCount || 0) + 1;
   }
 
   setTimeout(() => {
@@ -829,16 +1041,13 @@ socket.on('hand-complete', (data) => {
   const msg = data.winners.map(w => `${w.username} wins ${w.amount.toLocaleString()}`).join(' · ');
   el.gameMessage.textContent = msg;
   hideActionBar();
-
-  // Update win counts
-  for (const w of data.winners) {
-    if (state.seats[w.seatIndex]) {
-      state.seats[w.seatIndex].winCount = (state.seats[w.seatIndex].winCount || 0) + 1;
-    }
-  }
   renderSeats();
 
-  for (const w of data.winners) addSystemChat(`${w.username} wins ${w.amount.toLocaleString()}`);
+  for (const w of data.winners) {
+    addSystemChat(`${w.username} wins ${w.amount.toLocaleString()}`);
+    const seat = state.seats[w.seatIndex];
+    if (seat) seat.winCount = (seat.winCount || 0) + 1;
+  }
 
   setTimeout(() => {
     animateShuffle(() => {
@@ -869,7 +1078,7 @@ function resetGameState() {
 
 // ── Showdown Rendering ───────────────────────────────────────
 function renderShowdown(data) {
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < state.maxSeats; i++) {
     const ps = state.game.playerStates[i];
     if (!ps || ps.folded || !ps.hand) continue;
     const cardsDiv = document.getElementById(`seat-cards-${i}`);
@@ -878,19 +1087,19 @@ function renderShowdown(data) {
     for (const c of ps.hand) {
       const cardEl = createCardEl(c, false);
       cardsDiv.appendChild(cardEl);
-      setTimeout(() => cardEl.classList.add('flipped'), 200);
+      setTimeout(() => cardEl.classList.add('flipped'), 150);
     }
   }
   // Hand labels
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < state.maxSeats; i++) {
     const ps = state.game.playerStates[i];
     if (!ps || ps.folded || !ps.bestHand) continue;
     const seatEl = $(`.seat[data-seat="${i}"] .seat-info`);
     if (!seatEl) continue;
-    let handLabel = seatEl.querySelector('.best-hand-label');
+    let handLabel = seatEl.querySelector('.hand-label');
     if (!handLabel) {
       handLabel = document.createElement('div');
-      handLabel.className = 'best-hand-label';
+      handLabel.className = 'hand-label';
       seatEl.appendChild(handLabel);
     }
     handLabel.textContent = ps.bestHand.name;
@@ -901,12 +1110,10 @@ function renderShowdown(data) {
 function revealAllCommunityCards() {
   const slots = el.communityCards.querySelectorAll('.card.community-card');
   slots.forEach((slot, i) => {
-    if (i < state.game.communityCards.length) {
+    if (state.game.communityCards[i] && !slot.classList.contains('flipped')) {
+      updateCardFace(slot, state.game.communityCards[i]);
       slot.style.opacity = '1';
-      if (!slot.classList.contains('flipped')) {
-        updateCardFace(slot, state.game.communityCards[i]);
-        setTimeout(() => slot.classList.add('flipped'), i * 100);
-      }
+      setTimeout(() => slot.classList.add('flipped'), i * 80);
     }
   });
 }
@@ -927,7 +1134,6 @@ function updateCardFace(cardEl, card) {
 
 // ── Animations ───────────────────────────────────────────────
 
-// Deal cards from deck stack to each seat
 function animateDeal(players, callback) {
   const origin = getDeckCenter();
   const totalCards = players.length * 2;
@@ -939,13 +1145,13 @@ function animateDeal(players, callback) {
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
       const target = getSeatCardTarget(p.seatIndex);
-      const delay = (round * players.length + i) * 130;
+      const delay = (round * players.length + i) * 120;
 
       setTimeout(() => {
         const flyCard = document.createElement('div');
         flyCard.className = 'card card-dealing';
-        flyCard.style.width = SEAT_CARD_W + 'px';
-        flyCard.style.height = SEAT_CARD_H + 'px';
+        flyCard.style.width = '48px';
+        flyCard.style.height = '66px';
 
         const inner = document.createElement('div');
         inner.className = 'card-inner';
@@ -957,18 +1163,16 @@ function animateDeal(players, callback) {
         inner.appendChild(front);
         flyCard.appendChild(inner);
 
-        const halfW = SEAT_CARD_W / 2;
-        const halfH = SEAT_CARD_H / 2;
-        flyCard.style.left = (origin.x - halfW) + 'px';
-        flyCard.style.top = (origin.y - halfH) + 'px';
+        flyCard.style.left = (origin.x - 24) + 'px';
+        flyCard.style.top = (origin.y - 33) + 'px';
         flyCard.style.opacity = '1';
-        flyCard.style.transition = 'left .45s cubic-bezier(.22,.61,.36,1), top .45s cubic-bezier(.22,.61,.36,1), opacity .15s';
+        flyCard.style.transition = 'left .4s cubic-bezier(.25,.46,.45,.94), top .4s cubic-bezier(.25,.46,.45,.94), opacity .15s';
         document.body.appendChild(flyCard);
 
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            flyCard.style.left = (target.x - halfW) + 'px';
-            flyCard.style.top = (target.y - halfH) + 'px';
+            flyCard.style.left = (target.x - 24) + 'px';
+            flyCard.style.top = (target.y - 33) + 'px';
           });
         });
 
@@ -979,13 +1183,12 @@ function animateDeal(players, callback) {
             dealt++;
             if (dealt === totalCards && callback) callback();
           }, 150);
-        }, 470);
+        }, 420);
       }, delay);
     }
   }
 }
 
-// Animate new community cards — deal from deck face-down, then flip
 function animateNewCommunityCards(allCards, callback) {
   const newCards = allCards.slice(state.displayedCommunityCount);
   const startIdx = state.displayedCommunityCount;
@@ -997,24 +1200,15 @@ function animateNewCommunityCards(allCards, callback) {
   newCards.forEach((card, ni) => {
     const slotIdx = startIdx + ni;
     const slot = el.communityCards.children[slotIdx];
-    if (!slot) {
-      done++;
-      if (done === newCards.length) {
-        state.displayedCommunityCount = allCards.length;
-        if (callback) callback();
-      }
-      return;
-    }
+    if (!slot) return;
 
-    // Make slot visible (still face down) and set card face data
     slot.style.opacity = '1';
     updateCardFace(slot, card);
 
-    // Create flying card from deck
     const flyCard = document.createElement('div');
     flyCard.className = 'card community-card card-dealing';
-    flyCard.style.width = COMM_CARD_W + 'px';
-    flyCard.style.height = COMM_CARD_H + 'px';
+    flyCard.style.width = '60px';
+    flyCard.style.height = '84px';
 
     const inner = document.createElement('div');
     inner.className = 'card-inner';
@@ -1026,23 +1220,19 @@ function animateNewCommunityCards(allCards, callback) {
     inner.appendChild(front);
     flyCard.appendChild(inner);
 
-    const halfW = COMM_CARD_W / 2;
-    const halfH = COMM_CARD_H / 2;
-    flyCard.style.left = (origin.x - halfW) + 'px';
-    flyCard.style.top = (origin.y - halfH) + 'px';
+    flyCard.style.left = (origin.x - 30) + 'px';
+    flyCard.style.top = (origin.y - 42) + 'px';
     flyCard.style.opacity = '1';
-    flyCard.style.transition = 'left .5s cubic-bezier(.22,.61,.36,1), top .5s cubic-bezier(.22,.61,.36,1), opacity .15s';
+    flyCard.style.transition = 'left .45s cubic-bezier(.25,.46,.45,.94), top .45s cubic-bezier(.25,.46,.45,.94), opacity .15s';
     document.body.appendChild(flyCard);
 
-    const delay = ni * 200;
+    const slotRect = slot.getBoundingClientRect();
+    const targetX = slotRect.left + slotRect.width / 2 - 30;
+    const targetY = slotRect.top + slotRect.height / 2 - 42;
+
+    const delay = ni * 180;
 
     setTimeout(() => {
-      // Calculate slot target position
-      const slotRect = slot.getBoundingClientRect();
-      const targetX = slotRect.left + slotRect.width / 2 - halfW;
-      const targetY = slotRect.top + slotRect.height / 2 - halfH;
-
-      // Hide slot while flying card approaches
       slot.style.visibility = 'hidden';
 
       requestAnimationFrame(() => {
@@ -1052,12 +1242,10 @@ function animateNewCommunityCards(allCards, callback) {
         });
       });
 
-      // After arrival: remove flyer, show slot face-down, then flip
       setTimeout(() => {
         flyCard.remove();
         slot.style.visibility = 'visible';
 
-        // Flip to reveal
         setTimeout(() => {
           slot.classList.add('flipped');
           done++;
@@ -1065,13 +1253,12 @@ function animateNewCommunityCards(allCards, callback) {
             state.displayedCommunityCount = allCards.length;
             if (callback) callback();
           }
-        }, 150);
-      }, 530);
+        }, 120);
+      }, 480);
     }, delay);
   });
 }
 
-// Shuffle animation
 function animateShuffle(callback) {
   el.shuffleArea.innerHTML = '';
   const numCards = 8;

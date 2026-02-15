@@ -14,7 +14,7 @@ app.use(express.static('public'));
 // ── State ────────────────────────────────────────────────────
 
 const lobbies = new Map();
-const socketLobby = new Map();   // socketId → lobbyCode
+const socketLobby = new Map();
 
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -29,6 +29,10 @@ function lobbyState(lobby, forSocketId) {
     code: lobby.code,
     isHost,
     settings: { ...lobby.settings },
+    lobbyName: lobby.lobbyName,
+    isPublic: lobby.isPublic,
+    autoAccept: lobby.autoAccept,
+    maxSeats: lobby.maxSeats,
     seats: lobby.seats.map(s => s ? {
       username: s.username,
       seatIndex: s.seatIndex,
@@ -50,26 +54,59 @@ function lobbyState(lobby, forSocketId) {
 io.on('connection', (socket) => {
 
   // ── Create Lobby ───────────────────────────────────────────
-  socket.on('create-lobby', () => {
+  socket.on('create-lobby', (opts) => {
     let code;
     do { code = generateCode(); } while (lobbies.has(code));
+
+    opts = opts || {};
+    const maxSeats = Math.max(2, Math.min(12, parseInt(opts.maxSeats) || 8));
+    const lobbyName = (opts.lobbyName || '').trim().substring(0, 24) || code;
+    const isPublic = opts.isPublic !== false;
+    const autoAccept = !!opts.autoAccept;
+    const startStack = Math.max(100, Math.min(100000, parseInt(opts.startingStack) || 1000));
+    const sb = Math.max(1, Math.min(10000, parseInt(opts.smallBlind) || 5));
+    const bb = Math.max(2, Math.min(20000, parseInt(opts.bigBlind) || 10));
 
     const lobby = {
       code,
       hostId: socket.id,
-      seats: Array(8).fill(null),
+      lobbyName,
+      isPublic,
+      autoAccept,
+      maxSeats,
+      seats: Array(maxSeats).fill(null),
       spectators: new Set([socket.id]),
-      settings: { startingStack: 1000, smallBlind: 5, bigBlind: 10 },
+      settings: { startingStack: startStack, smallBlind: sb, bigBlind: bb },
       game: null,
       pendingApprovals: [],
       handCount: 0,
-      playerStats: new Map(),  // socketId → { bustCount, winCount }
+      playerStats: new Map(),
     };
 
     lobbies.set(code, lobby);
     socket.join(code);
     socketLobby.set(socket.id, code);
     socket.emit('lobby-created', lobbyState(lobby, socket.id));
+  });
+
+  // ── List Public Lobbies ────────────────────────────────────
+  socket.on('list-public-lobbies', () => {
+    const list = [];
+    for (const [code, lobby] of lobbies) {
+      if (!lobby.isPublic) continue;
+      const playerCount = lobby.seats.filter(s => s).length;
+      list.push({
+        code: lobby.code,
+        lobbyName: lobby.lobbyName,
+        playerCount,
+        maxSeats: lobby.maxSeats,
+        startingStack: lobby.settings.startingStack,
+        smallBlind: lobby.settings.smallBlind,
+        bigBlind: lobby.settings.bigBlind,
+        gameInProgress: lobby.game !== null && lobby.game.phase !== 'waiting' && lobby.game.phase !== 'complete',
+      });
+    }
+    socket.emit('public-lobbies', list);
   });
 
   // ── Join Lobby ─────────────────────────────────────────────
@@ -88,11 +125,10 @@ io.on('connection', (socket) => {
   socket.on('request-seat', ({ seatIndex, username }) => {
     const lobby = getLobby(socket);
     if (!lobby) return;
-    if (seatIndex < 0 || seatIndex > 7 || lobby.seats[seatIndex]) {
+    if (seatIndex < 0 || seatIndex >= lobby.maxSeats || lobby.seats[seatIndex]) {
       socket.emit('error-msg', 'Seat unavailable');
       return;
     }
-    // Already seated?
     if (lobby.seats.some(s => s && s.socketId === socket.id)) {
       socket.emit('error-msg', 'Already seated');
       return;
@@ -100,7 +136,7 @@ io.on('connection', (socket) => {
 
     const gameActive = lobby.game && !['waiting', 'complete'].includes(lobby.game.phase);
 
-    if (socket.id === lobby.hostId) {
+    if (socket.id === lobby.hostId || lobby.autoAccept) {
       seatPlayer(lobby, socket.id, seatIndex, username, gameActive);
     } else {
       lobby.pendingApprovals.push({ socketId: socket.id, seatIndex, username });
@@ -138,7 +174,6 @@ io.on('connection', (socket) => {
     const seatIdx = lobby.seats.findIndex(s => s && s.socketId === socket.id);
     if (seatIdx === -1) return;
 
-    // If game active, fold them
     if (lobby.game && !['waiting', 'complete'].includes(lobby.game.phase)) {
       const result = lobby.game.handleAction(seatIdx, 'fold');
       if (result && !result.error) broadcastAction(lobby, result);
@@ -153,7 +188,6 @@ io.on('connection', (socket) => {
     const lobby = getLobby(socket);
     if (!lobby || socket.id !== lobby.hostId) return;
 
-    // Activate pending-next-round players
     for (const s of lobby.seats) {
       if (s && s.pendingNextRound) s.pendingNextRound = false;
     }
@@ -175,12 +209,10 @@ io.on('connection', (socket) => {
     const result = lobby.game.startHand(activePlayers);
     if (!result) { socket.emit('error-msg', 'Could not start hand'); return; }
 
-    // Send private hands
     for (const p of result.players) {
       io.to(p.socketId).emit('your-hand', { hand: p.hand });
     }
 
-    // Broadcast game state (no private cards)
     io.to(lobby.code).emit('hand-started', {
       handNumber: lobby.handCount,
       dealerSeatIndex: result.dealerSeatIndex,
@@ -194,7 +226,6 @@ io.on('connection', (socket) => {
       })),
     });
 
-    // Send available actions to first player
     sendActions(lobby);
   });
 
@@ -224,10 +255,43 @@ io.on('connection', (socket) => {
   socket.on('update-settings', (settings) => {
     const lobby = getLobby(socket);
     if (!lobby || socket.id !== lobby.hostId) return;
+
     if (settings.startingStack) lobby.settings.startingStack = Math.max(100, Math.min(100000, parseInt(settings.startingStack) || 1000));
     if (settings.smallBlind) lobby.settings.smallBlind = Math.max(1, Math.min(10000, parseInt(settings.smallBlind) || 5));
     if (settings.bigBlind) lobby.settings.bigBlind = Math.max(2, Math.min(20000, parseInt(settings.bigBlind) || 10));
-    io.to(lobby.code).emit('settings-updated', lobby.settings);
+
+    if (settings.maxSeats !== undefined) {
+      const gameActive = lobby.game && !['waiting', 'complete'].includes(lobby.game.phase);
+      if (!gameActive) {
+        const newMax = Math.max(2, Math.min(12, parseInt(settings.maxSeats) || 8));
+        for (let i = newMax; i < lobby.seats.length; i++) {
+          if (lobby.seats[i]) {
+            const kicked = lobby.seats[i];
+            io.to(kicked.socketId).emit('kicked');
+            io.to(lobby.code).emit('player-left', { seatIndex: i });
+            lobby.seats[i] = null;
+          }
+        }
+        lobby.maxSeats = newMax;
+        if (lobby.seats.length < newMax) {
+          for (let i = lobby.seats.length; i < newMax; i++) lobby.seats.push(null);
+        } else {
+          lobby.seats.length = newMax;
+        }
+      }
+    }
+
+    if (settings.autoAccept !== undefined) lobby.autoAccept = !!settings.autoAccept;
+    if (settings.isPublic !== undefined) lobby.isPublic = !!settings.isPublic;
+    if (settings.lobbyName !== undefined) lobby.lobbyName = (settings.lobbyName || '').trim().substring(0, 24) || lobby.code;
+
+    io.to(lobby.code).emit('settings-updated', {
+      ...lobby.settings,
+      maxSeats: lobby.maxSeats,
+      autoAccept: lobby.autoAccept,
+      isPublic: lobby.isPublic,
+      lobbyName: lobby.lobbyName,
+    });
   });
 
   // ── Kick Player ────────────────────────────────────────────
@@ -253,7 +317,6 @@ io.on('connection', (socket) => {
 
     const seatIdx = lobby.seats.findIndex(s => s && s.socketId === socket.id);
     if (seatIdx !== -1) {
-      // If game is active, fold
       if (lobby.game && !['waiting', 'complete'].includes(lobby.game.phase)) {
         const result = lobby.game.handleAction(seatIdx, 'fold');
         if (result && !result.error) broadcastAction(lobby, result);
@@ -262,7 +325,6 @@ io.on('connection', (socket) => {
       io.to(code).emit('player-left', { seatIndex: seatIdx });
     }
 
-    // If host left, transfer or close
     if (lobby.hostId === socket.id) {
       const nextHost = lobby.seats.find(s => s && s.socketId !== socket.id);
       if (nextHost) {
@@ -341,7 +403,6 @@ function broadcastAction(lobby, result) {
       allInRunout: !!result.allInRunout,
     });
     if (result.allInRunout) {
-      // Reveal all active players' hands in all-in runout
       if (!lobby.game._allInRevealed) {
         lobby.game._allInRevealed = true;
         const hands = lobby.game.players
@@ -349,7 +410,6 @@ function broadcastAction(lobby, result) {
           .map(p => ({ seatIndex: p.seatIndex, hand: [...p.hand] }));
         io.to(lobby.code).emit('cards-revealed', { hands });
       }
-      // Auto-advance to next phase after delay
       setTimeout(() => {
         if (!lobby.game || lobby.game.phase === 'complete' || lobby.game.phase === 'showdown') return;
         const next = lobby.game._nextPhase();
@@ -364,7 +424,6 @@ function broadcastAction(lobby, result) {
       potResults: result.potResults,
       players: result.players,
     });
-    // Update seat chips and track wins
     for (const p of result.players) {
       const seat = lobby.seats[p.seatIndex];
       if (seat) seat.chips = p.chips;
@@ -380,10 +439,8 @@ function broadcastAction(lobby, result) {
         }
       }
     }
-    // Handle busted players after animation
     setTimeout(() => handleBustedPlayers(lobby), 4500);
   } else if (result.type === 'handComplete') {
-    // Track wins
     for (const w of result.winners) {
       const seat = lobby.seats[w.seatIndex];
       if (seat) {
@@ -401,7 +458,6 @@ function broadcastAction(lobby, result) {
       const seat = lobby.seats[p.seatIndex];
       if (seat) seat.chips = p.chips;
     }
-    // Handle busted players after animation
     setTimeout(() => handleBustedPlayers(lobby), 3500);
   }
 }
